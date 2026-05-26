@@ -71,3 +71,16 @@ def test_invalid_weight_rejected(tmp_path):
 def test_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "nope.toml")
+
+
+def test_empty_topics_rejected(tmp_path):
+    # Replace the single [[topics]] block with an explicit empty list
+    body = MINIMAL.replace(
+        """    [[topics]]
+    name = "AI studies"
+    weight = 1.0
+    keywords = ["large language model", "neural network"]""",
+        "    topics = []",
+    )
+    with pytest.raises(ValueError):
+        load_config(write_config(tmp_path, body))
