@@ -25,17 +25,24 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path) -> Path | None:
 
     NOTE: exact subcommands/flags are confirmed during manual integration
     (see README setup). This wraps the documented 'audio' generation flow.
+    A timeout, missing binary, or non-zero exit all return None so the
+    orchestrator's failure budget (NotebookLMError) handles them uniformly.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     before = set(out_dir.iterdir())
-    result = subprocess.run(
-        [nlm_command, "audio", "--source", str(pdf_path), "--out", str(out_dir)],
-        capture_output=True, text=True, timeout=1800,
-    )
+    try:
+        result = subprocess.run(
+            [nlm_command, "audio", "--source", str(pdf_path), "--out", str(out_dir)],
+            capture_output=True, text=True, timeout=1800,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     if result.returncode != 0:
         return None
-    new_files = [p for p in out_dir.iterdir()
-                 if p not in before and p.suffix.lower() in AUDIO_EXTS]
+    new_files = sorted(
+        p for p in out_dir.iterdir()
+        if p not in before and p.suffix.lower() in AUDIO_EXTS
+    )
     return new_files[0] if new_files else None
 
 
@@ -47,5 +54,5 @@ def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path) -> Generated
         paper=paper,
         audio_path=audio,
         duration_seconds=0,  # populated by plex tagging step via mutagen
-        nlm_notebook_id="",
+        nlm_notebook_id="",  # populated once nlm notebook lifecycle is confirmed (manual integration)
     )
