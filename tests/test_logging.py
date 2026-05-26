@@ -13,3 +13,9 @@ def test_post_discord_sends_payload():
     assert route.called
     sent = route.calls[0].request
     assert b"something broke" in sent.content
+
+
+def test_post_discord_never_raises_on_bad_url():
+    # Empty or None webhook must not raise — alerting must never crash the run.
+    post_discord("", "msg")
+    post_discord(None, "msg")  # type: ignore[arg-type]

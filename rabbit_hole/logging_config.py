@@ -6,10 +6,12 @@ import structlog
 
 
 def post_discord(webhook_url: str, message: str) -> None:
+    if not webhook_url:
+        return
     try:
         httpx.post(webhook_url, json={"content": message[:1900]}, timeout=10.0)
-    except httpx.HTTPError:
-        pass  # never let alerting failures crash the run
+    except Exception:  # noqa: BLE001 - alerting must never crash the run
+        pass
 
 
 def configure_logging(log_dir: Path, webhook_url: str | None) -> structlog.BoundLogger:
