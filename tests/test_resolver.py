@@ -54,6 +54,33 @@ def test_download_pdf_saves_file(tmp_path):
 
 
 @respx.mock
+def test_download_pdf_leaves_no_part_file(tmp_path):
+    from rabbit_hole.resolver import download_pdf
+    respx.get("http://x/p.pdf").mock(return_value=httpx.Response(200, content=b"%PDF-1.4 ok"))
+    dest = tmp_path / "out.pdf"
+    download_pdf("http://x/p.pdf", dest)
+    assert dest.exists()
+    assert not (tmp_path / "out.pdf.part").exists()
+
+
+@respx.mock
+def test_download_pdf_cleans_up_on_failure(tmp_path):
+    import pytest
+    from rabbit_hole.resolver import download_pdf
+    respx.get("http://x/bad.pdf").mock(return_value=httpx.Response(500))
+    dest = tmp_path / "bad.pdf"
+    with pytest.raises(httpx.HTTPError):
+        download_pdf("http://x/bad.pdf", dest)
+    assert not dest.exists()
+    assert not (tmp_path / "bad.pdf.part").exists()
+
+
+def test_extract_doi_strips_trailing_paren_period():
+    item = make_item(summary="(see doi:10.1038/s41586-024-12345.)", link="https://example.com/news")
+    assert extract_doi(item) == "10.1038/s41586-024-12345"
+
+
+@respx.mock
 def test_unpaywall_returns_pdf_url(tmp_db, migrations_dir):
     from rabbit_hole.resolver import unpaywall_pdf_url
     st = State(tmp_db, migrations_dir)
@@ -130,3 +157,25 @@ def test_resolve_returns_none_when_no_pdf(tmp_db, migrations_dir, tmp_path):
     )
     paper = resolve(item, ApisConfig(unpaywall_email="e@x.com"), st, pdf_dir=tmp_path)
     assert paper is None
+
+
+@respx.mock
+def test_resolve_sanitizes_windows_illegal_filename(tmp_db, migrations_dir, tmp_path):
+    from rabbit_hole.resolver import resolve
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    # DOI containing a colon (legal in DOIs, illegal in Windows filenames)
+    item = make_item(
+        link="https://example.com/news",
+        summary="doi:10.1038/s41586:2024:12345 study",
+        title="Colon DOI paper",
+    )
+    respx.get("https://api.unpaywall.org/v2/10.1038/s41586:2024:12345").mock(
+        return_value=httpx.Response(200, json={"best_oa_location": {"url_for_pdf": "http://oa.org/c.pdf"}})
+    )
+    respx.get("http://oa.org/c.pdf").mock(return_value=httpx.Response(200, content=b"%PDF-1.4 x"))
+    paper = resolve(item, ApisConfig(unpaywall_email="e@x.com"), st, pdf_dir=tmp_path)
+    assert paper is not None
+    assert paper.pdf_path.exists()
+    # filename must contain no Windows-illegal characters
+    assert not set(paper.pdf_path.name) & set('<>:"/\\|?*')

@@ -11,6 +11,7 @@ from rabbit_hole.sources import FeedItem
 from rabbit_hole.state import State, hash_str
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+_ILLEGAL_FS = re.compile(r'[<>:"/\\|?*]')
 USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
 
 
@@ -30,7 +31,7 @@ def extract_doi(item: FeedItem) -> str | None:
     for text in (item.link, item.summary, item.title):
         m = DOI_RE.search(text or "")
         if m:
-            return m.group(0).rstrip(".").rstrip(")")
+            return m.group(0).rstrip(".,;:)")
     return None
 
 
@@ -60,12 +61,18 @@ def _get_json(url: str, api: str, state: State, params: dict | None = None) -> d
 
 def download_pdf(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with httpx.stream("GET", url, headers={"User-Agent": USER_AGENT},
-                      timeout=30.0, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        with dest.open("wb") as f:
-            for chunk in resp.iter_bytes():
-                f.write(chunk)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    try:
+        with httpx.stream("GET", url, headers={"User-Agent": USER_AGENT},
+                          timeout=30.0, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            with tmp.open("wb") as f:
+                for chunk in resp.iter_bytes():
+                    f.write(chunk)
+        tmp.replace(dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
 
 
@@ -108,14 +115,14 @@ def resolve(item: FeedItem, apis: ApisConfig, state: State, pdf_dir: Path) -> Pa
     doi = extract_doi(item)
     pdf_path = None
     for url in _candidate_pdf_urls(item, doi, apis, state):
-        name = (doi or hash_str(item.link)).replace("/", "_") + ".pdf"
+        name = _ILLEGAL_FS.sub("_", doi or hash_str(item.link)) + ".pdf"
         dest = Path(pdf_dir) / name
         try:
             if not dest.exists():
                 download_pdf(url, dest)
             pdf_path = dest
             break
-        except httpx.HTTPError:
+        except (httpx.HTTPError, OSError):
             continue
     if pdf_path is None:
         return None
