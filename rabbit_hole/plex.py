@@ -17,7 +17,9 @@ def sanitize(name: str) -> str:
 
 def episode_filename(ep: GeneratedEpisode, topic_bucket: str, existing: set[str]) -> str:
     ext = ep.audio_path.suffix.lower()
-    base = f"{sanitize(topic_bucket)} - {sanitize(ep.paper.title)}"
+    topic = sanitize(topic_bucket) or "Misc"
+    title = sanitize(ep.paper.title) or sanitize(ep.paper.doi or "") or "untitled"
+    base = f"{topic} - {title}"
     candidate = f"{base}{ext}"
     n = 2
     while candidate in existing:

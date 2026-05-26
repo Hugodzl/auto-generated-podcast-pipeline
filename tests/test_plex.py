@@ -33,3 +33,10 @@ def test_episode_filename_dedups_collision(tmp_path):
     existing = {"Animal behavior - Sperm whales have vowels.m4a"}
     name = episode_filename(ep, topic_bucket="Animal behavior", existing=existing)
     assert name == "Animal behavior - Sperm whales have vowels (2).m4a"
+
+
+def test_episode_filename_falls_back_when_title_empty(tmp_path):
+    # A title made entirely of illegal chars sanitizes to "" -> must fall back to the DOI
+    ep = make_ep(tmp_path, title="///:*?")
+    name = episode_filename(ep, topic_bucket="Animals", existing=set())
+    assert name == "Animals - 10.1-x.m4a"
