@@ -12,6 +12,9 @@ class ScheduleConfig(BaseModel):
 class RankingConfig(BaseModel):
     recency_half_life_days: float = Field(gt=0)
 
+    def ranking_half_life(self) -> float:
+        return self.recency_half_life_days
+
 
 class TopicConfig(BaseModel):
     name: str
