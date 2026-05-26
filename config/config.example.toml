@@ -1,0 +1,118 @@
+[schedule]
+cron = "0 7 * * MON"            # Monday 07:00 local
+episodes_per_run = 5
+
+[ranking]
+recency_half_life_days = 30
+
+[[topics]]
+name = "AI studies"
+weight = 1.0
+keywords = ["large language model", "neural network", "reinforcement learning",
+            "transformer", "interpretability", "alignment", "emergent behavior",
+            "machine learning", "deep learning", "foundation model"]
+
+[[topics]]
+name = "Animal behavior and cognition"
+weight = 1.0
+keywords = ["animal cognition", "comparative cognition", "primate", "cetacean",
+            "whale", "corvid", "animal communication", "social behavior",
+            "tool use", "vocal learning"]
+
+[[topics]]
+name = "Human relationships and psychology"
+weight = 1.0
+keywords = ["attachment", "romantic relationship", "couple", "social psychology",
+            "affective", "intimacy", "partner", "emotion regulation"]
+
+[[sources]]
+name = "Nature"
+type = "rss"
+url = "https://www.nature.com/nature.rss"
+weight = 1.0
+
+[[sources]]
+name = "Science"
+type = "rss"
+url = "https://www.science.org/rss/news_current.xml"
+weight = 1.0
+
+[[sources]]
+name = "PNAS"
+type = "rss"
+url = "https://www.pnas.org/rss/current.xml"
+weight = 0.9
+
+[[sources]]
+name = "Current Biology"
+type = "rss"
+url = "https://www.cell.com/current-biology/current.rss"
+weight = 0.9
+
+[[sources]]
+name = "Quanta Magazine"
+type = "rss"
+url = "https://api.quantamagazine.org/feed/"
+weight = 0.9
+
+[[sources]]
+name = "MIT Technology Review"
+type = "rss"
+url = "https://www.technologyreview.com/feed/"
+weight = 0.8
+
+[[sources]]
+name = "Ars Technica Science"
+type = "rss"
+url = "https://feeds.arstechnica.com/arstechnica/science"
+weight = 0.8
+
+[[sources]]
+name = "arXiv cs.AI"
+type = "rss"
+url = "http://export.arxiv.org/rss/cs.AI"
+weight = 0.7
+
+[[sources]]
+name = "arXiv cs.LG"
+type = "rss"
+url = "http://export.arxiv.org/rss/cs.LG"
+weight = 0.7
+
+[[sources]]
+name = "arXiv cs.CL"
+type = "rss"
+url = "http://export.arxiv.org/rss/cs.CL"
+weight = 0.7
+
+[[sources]]
+name = "bioRxiv animal behavior"
+type = "rss"
+url = "http://connect.biorxiv.org/biorxiv_xml.php?subject=animal_behavior_and_cognition"
+weight = 0.6
+
+[[sources]]
+name = "bioRxiv neuroscience"
+type = "rss"
+url = "http://connect.biorxiv.org/biorxiv_xml.php?subject=neuroscience"
+weight = 0.6
+
+[[sources]]
+name = "PsyArXiv"
+type = "rss"
+url = "https://share.osf.io/api/v2/feeds/atom/?q=psyarxiv"
+weight = 0.6
+
+[notebooklm]
+nlm_command = "nlm"
+
+[plex]
+base_url = "http://127.0.0.1:32400/"
+library_name = "The Random Rabbit Hole"
+target_folder = "D:/Videos/PlexLibrary/Podcasts/The Random Rabbit Hole"
+
+[apis]
+unpaywall_email = "you@example.com"
+
+[notifications]
+discord_webhook_keyring_key = "discord_webhook_url"
