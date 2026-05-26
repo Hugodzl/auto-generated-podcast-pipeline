@@ -50,7 +50,10 @@ def file_episode(ep: GeneratedEpisode, topic_bucket: str, config: PlexConfig,
     dest = target_dir / filename
     shutil.move(str(ep.audio_path), str(dest))
     tag_audio(dest, ep, topic_bucket)
-    _refresh_plex(config, token)
+    try:
+        _refresh_plex(config, token)
+    except Exception:  # noqa: BLE001 - refresh is best-effort; Plex rescans on its own schedule
+        pass
     return dest
 
 
