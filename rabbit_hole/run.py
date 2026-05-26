@@ -67,6 +67,7 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path, logg
         )
         generated += 1
         logger.info("filed", title=s.paper.title, path=str(dest))
+        failures = 0  # reset: budget is CONSECUTIVE nlm failures
     return generated
 
 

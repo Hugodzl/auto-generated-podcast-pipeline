@@ -104,3 +104,32 @@ def test_run_pipeline_aborts_after_5_failures(tmp_path, monkeypatch):
 
     with pytest.raises(NotebookLMError):
         run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+
+
+def test_run_pipeline_does_not_abort_on_nonconsecutive_failures(tmp_path, monkeypatch):
+    # 8 papers, 6 failures total but never 5 in a row -> must complete, not abort.
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config(episodes_per_run=8)
+
+    papers = [_make_paper(f"Whale paper {i}", f"10.1/{i}") for i in range(8)]
+    items = [p.source for p in papers]
+    by_link = {p.source.link: p for p in papers}
+
+    # Pattern F F S F F S F F : 6 failures, 2 successes, max 2 consecutive failures.
+    outcomes = iter([False, False, True, False, False, True, False, False])
+
+    def fake_generate(paper, cfg_, out_dir):
+        if next(outcomes):
+            return GeneratedEpisode(paper=paper, audio_path=tmp_path / "a.m4a",
+                                    duration_seconds=1, nlm_notebook_id="n")
+        raise NotebookLMError("boom")
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
+    monkeypatch.setattr("rabbit_hole.run.generate", fake_generate)
+    monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 2  # the two successes were filed; run did not abort
