@@ -1,9 +1,13 @@
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+import keyring
+import pytest
 import respx
 
+from rabbit_hole import resolver
 from rabbit_hole.config import ApisConfig
 from rabbit_hole.resolver import extract_doi, detect_language, Paper
 from rabbit_hole.sources import FeedItem
@@ -17,6 +21,17 @@ def make_item(link="https://www.nature.com/articles/s41586-024-12345",
         summary=summary, link=link,
         published_at=datetime(2026, 5, 19, tzinfo=timezone.utc), raw={},
     )
+
+
+@pytest.fixture(autouse=True)
+def _fast_resolver(monkeypatch):
+    """Keep the suite fast and isolated: no real sleeps, no real keyring reads,
+    and reset the module-level S2 request-time map between tests."""
+    resolver._LAST_REQUEST_AT.clear()
+    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(keyring, "get_password", lambda *_a, **_k: None)
+    yield
+    resolver._LAST_REQUEST_AT.clear()
 
 
 def test_extract_doi_from_summary():
@@ -179,3 +194,74 @@ def test_resolve_sanitizes_windows_illegal_filename(tmp_db, migrations_dir, tmp_
     assert paper.pdf_path.exists()
     # filename must contain no Windows-illegal characters
     assert not set(paper.pdf_path.name) & set('<>:"/\\|?*')
+
+
+_S2_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+
+@respx.mock
+def test_get_json_retries_after_429_then_succeeds(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    route = respx.get(_S2_SEARCH).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "1"}),
+            httpx.Response(200, json={"data": [{"openAccessPdf": {"url": "http://s2.org/p.pdf"}}]}),
+        ]
+    )
+    url = resolver.semantic_scholar_pdf_url("Sperm whales have vowels", state=st)
+    assert url == "http://s2.org/p.pdf"
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_get_json_returns_none_after_persistent_429(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    route = respx.get(_S2_SEARCH).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "1"})
+    )
+    result = resolver._get_json(_S2_SEARCH, "semantic_scholar", st, params={"query": "x"})
+    assert result is None
+    assert route.call_count >= 2  # retried, did not fail fast
+
+
+@respx.mock
+def test_throttle_can_be_disabled_with_zero_interval(tmp_db, migrations_dir, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(resolver, "_S2_MIN_INTERVAL", 0)
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    respx.get(_S2_SEARCH).mock(return_value=httpx.Response(200, json={"data": []}))
+    resolver.semantic_scholar_pdf_url("query one", state=st)
+    resolver.semantic_scholar_pdf_url("query two", state=st)
+    assert sleeps == []
+
+
+@respx.mock
+def test_semantic_scholar_sends_api_key_header(tmp_db, migrations_dir, monkeypatch):
+    monkeypatch.setattr(
+        keyring, "get_password",
+        lambda service, key: "SECRET-KEY" if key == "semantic_scholar_api_key" else None,
+    )
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    route = respx.get(_S2_SEARCH).mock(
+        return_value=httpx.Response(200, json={"data": [{"openAccessPdf": {"url": "http://s2.org/p.pdf"}}]})
+    )
+    url = resolver.semantic_scholar_pdf_url("Sperm whales have vowels", state=st)
+    assert url == "http://s2.org/p.pdf"
+    assert route.calls.last.request.headers.get("x-api-key") == "SECRET-KEY"
+
+
+@respx.mock
+def test_s2_requests_are_throttled(tmp_db, migrations_dir, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    respx.get(_S2_SEARCH).mock(return_value=httpx.Response(200, json={"data": []}))
+    resolver.semantic_scholar_pdf_url("query one", state=st)
+    resolver.semantic_scholar_pdf_url("query two", state=st)
+    assert any(s > 0 for s in sleeps)  # second uncached S2 call was spaced out

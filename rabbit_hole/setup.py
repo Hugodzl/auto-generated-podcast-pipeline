@@ -11,6 +11,10 @@ def main() -> None:
     keyring.set_password(KEYRING_SERVICE, "plex_token", plex)
     webhook = getpass.getpass("Discord webhook URL: ")
     keyring.set_password(KEYRING_SERVICE, "discord_webhook_url", webhook)
+    s2 = getpass.getpass("Semantic Scholar API key (optional, Enter to skip): ").strip()
+    if s2:
+        keyring.set_password(KEYRING_SERVICE, "semantic_scholar_api_key", s2)
+        print("Stored Semantic Scholar API key (relaxes the resolver throttle).")
     print("Saved. Verify with: python -c \"import keyring; print(bool(keyring.get_password('rabbit_hole','plex_token')))\"")
 
 

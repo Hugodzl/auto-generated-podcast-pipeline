@@ -1,9 +1,11 @@
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import httpx
+import keyring
 from langdetect import LangDetectException, detect
 
 from rabbit_hole.config import ApisConfig
@@ -13,6 +15,51 @@ from rabbit_hole.state import State, hash_str
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*]')
 USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
+
+KEYRING_SERVICE = "rabbit_hole"
+# Semantic Scholar's keyless tier is ~1 req/sec shared; space S2 calls to stay
+# under it (a cold run can fire >1000 lookups). Patch to 0 in tests.
+_S2_MIN_INTERVAL = 1.1
+_MAX_RETRIES = 3
+_LAST_REQUEST_AT: dict[str, float] = {}
+
+
+def _api_key(api: str) -> str | None:
+    """Optional Semantic Scholar key from Credential Manager; None if unset."""
+    if api != "semantic_scholar":
+        return None
+    try:
+        return keyring.get_password(KEYRING_SERVICE, "semantic_scholar_api_key") or None
+    except Exception:
+        return None
+
+
+def _min_interval(api: str, has_key: bool) -> float:
+    if api == "semantic_scholar" and not has_key:
+        return _S2_MIN_INTERVAL
+    return 0.0
+
+
+def _throttle(api: str, has_key: bool) -> None:
+    interval = _min_interval(api, has_key)
+    if interval <= 0:
+        return
+    last = _LAST_REQUEST_AT.get(api)
+    if last is not None:
+        wait = interval - (time.monotonic() - last)
+        if wait > 0:
+            time.sleep(wait)
+    _LAST_REQUEST_AT[api] = time.monotonic()
+
+
+def _retry_delay(resp: httpx.Response, attempt: int) -> float:
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return 2.0 ** attempt
 
 
 @dataclass
@@ -48,15 +95,30 @@ def _get_json(url: str, api: str, state: State, params: dict | None = None) -> d
     cached = state.cache_get(api, key, ttl_days=30)
     if cached is not None:
         return cached
-    try:
-        resp = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT},
-                         timeout=10.0, follow_redirects=True)
-        resp.raise_for_status()
-        data = resp.json()
-    except (httpx.HTTPError, ValueError):
-        return None
-    state.cache_set(api, key, data)
-    return data
+
+    api_key = _api_key(api)
+    headers = {"User-Agent": USER_AGENT}
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    for attempt in range(_MAX_RETRIES + 1):
+        _throttle(api, has_key=bool(api_key))
+        try:
+            resp = httpx.get(url, params=params, headers=headers,
+                             timeout=10.0, follow_redirects=True)
+        except httpx.HTTPError:
+            return None
+        if resp.status_code == 429 and attempt < _MAX_RETRIES:
+            time.sleep(_retry_delay(resp, attempt))
+            continue
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        state.cache_set(api, key, data)
+        return data
+    return None
 
 
 def download_pdf(url: str, dest: Path) -> Path:
