@@ -2,6 +2,11 @@
 
 Weekly pipeline: science RSS -> paper PDF -> NotebookLM audio -> Plex.
 
+> **First time setting this up?** Follow the step-by-step
+> [Manual Integration Checklist](docs/INTEGRATION.md) — it covers `nlm`
+> first-contact discovery, credentials, Plex, the smoke test, and scheduling,
+> with troubleshooting. The summary below is the short version.
+
 ## Setup (one-time)
 
 1. Install [uv](https://docs.astral.sh/uv/) and Python 3.11+.
