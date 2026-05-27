@@ -40,3 +40,25 @@ def test_episode_filename_falls_back_when_title_empty(tmp_path):
     ep = make_ep(tmp_path, title="///:*?")
     name = episode_filename(ep, topic_bucket="Animals", existing=set())
     assert name == "Animals - 10.1-x.m4a"
+
+
+def test_tag_audio_sets_album_artist_for_plex_grouping(tmp_path, monkeypatch):
+    # Plex Music groups albums by album-artist; without it the episode lands under
+    # "Various Artists" instead of "Hugo Déziel" (confirmed against the live server).
+    import mutagen
+
+    from rabbit_hole.plex import tag_audio
+
+    class FakeAudio(dict):
+        def save(self):
+            self.saved = True
+
+    fake = FakeAudio()
+    monkeypatch.setattr(mutagen, "File", lambda *a, **k: fake)
+
+    ep = make_ep(tmp_path)
+    tag_audio(tmp_path / "tmp.m4a", ep, "AI studies")
+
+    assert fake.get("albumartist") == "Hugo Déziel"
+    assert fake.get("artist") == "Hugo Déziel"
+    assert fake.get("album") == "The Random Rabbit Hole"

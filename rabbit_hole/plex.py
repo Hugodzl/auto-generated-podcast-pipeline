@@ -34,6 +34,7 @@ def tag_audio(path: Path, ep: GeneratedEpisode, topic_bucket: str) -> None:
     if audio is None:
         return
     audio["artist"] = "Hugo Déziel"
+    audio["albumartist"] = "Hugo Déziel"  # Plex Music groups albums by album-artist
     audio["album"] = "The Random Rabbit Hole"
     audio["title"] = ep.paper.title[:200]
     audio["genre"] = topic_bucket

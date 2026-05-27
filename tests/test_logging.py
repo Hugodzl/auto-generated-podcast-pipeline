@@ -30,3 +30,23 @@ def test_configure_logging_returns_usable_logger(tmp_path):
     # Must accept structured kwargs at INFO and ERROR without raising.
     logger.info("smoke", count=3)
     logger.error("oops", error="boom")
+
+
+def test_configure_logging_writes_json_events_to_utf8_file(tmp_path):
+    # The headless scheduled run has no console, so structured events MUST land
+    # in rabbit_hole.log (not stdout), and the file MUST be UTF-8 so non-ASCII
+    # paper titles don't crash logging on a cp1252 Windows host.
+    import logging
+
+    from rabbit_hole.logging_config import configure_logging
+
+    log_dir = tmp_path / "logs"
+    logger = configure_logging(log_dir, webhook_url=None)
+    logger.info("filed", title="Café déjà vu ✓ 你好")
+    for h in logging.getLogger().handlers:
+        h.flush()
+
+    log_file = log_dir / "rabbit_hole.log"
+    content = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+    assert '"event": "filed"' in content
+    assert "Café déjà vu ✓ 你好" in content

@@ -1,11 +1,19 @@
+import json
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from rabbit_hole.config import NotebookLMConfig
 from rabbit_hole.resolver import Paper
 
-AUDIO_EXTS = (".m4a", ".wav", ".mp3", ".m4v")
+_CALL_TIMEOUT = 120            # seconds for a single non-waiting nlm call
+_SOURCE_WAIT_TIMEOUT = 600     # seconds to wait for PDF ingest (`source add --wait`)
+_AUDIO_POLL_INTERVAL = 15      # seconds between studio-artifact status polls
+_AUDIO_POLL_TIMEOUT = 1800     # max seconds to wait for audio generation
+_DOWNLOAD_RETRY_INTERVAL = 30  # seconds between download attempts
+_DOWNLOAD_MAX_ATTEMPTS = 30    # ~15 min total: ride out the status->rendition lag
 
 
 class NotebookLMError(RuntimeError):
@@ -20,30 +28,131 @@ class GeneratedEpisode:
     nlm_notebook_id: str
 
 
-def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path) -> Path | None:
-    """Invoke the nlm CLI. Returns the produced audio file, or None on failure.
-
-    NOTE: exact subcommands/flags are confirmed during manual integration
-    (see README setup). This wraps the documented 'audio' generation flow.
-    A timeout, missing binary, or non-zero exit all return None so the
-    orchestrator's failure budget (NotebookLMError) handles them uniformly.
-    """
-    out_dir.mkdir(parents=True, exist_ok=True)
-    before = set(out_dir.iterdir())
+def _nlm(nlm_command: str, args: list[str], timeout: float):
+    """Run one nlm subcommand. Returns the CompletedProcess, or None if the
+    binary is missing or the call times out."""
     try:
-        result = subprocess.run(
-            [nlm_command, "audio", "--source", str(pdf_path), "--out", str(out_dir)],
-            capture_output=True, text=True, timeout=1800,
+        return subprocess.run(
+            [nlm_command, *args],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
-    if result.returncode != 0:
+
+
+def _nlm_json(nlm_command: str, args: list[str], timeout: float):
+    """Run an nlm subcommand expected to emit JSON on success; return the parsed
+    value, or None on any failure."""
+    result = _nlm(nlm_command, args, timeout)
+    if result is None or result.returncode != 0:
         return None
-    new_files = sorted(
-        p for p in out_dir.iterdir()
-        if p not in before and p.suffix.lower() in AUDIO_EXTS
-    )
-    return new_files[0] if new_files else None
+    try:
+        return json.loads(result.stdout)
+    except (ValueError, TypeError):
+        return None
+
+
+def _find_notebook_id(nlm_command: str, title: str) -> str | None:
+    notebooks = _nlm_json(nlm_command, ["list", "notebooks", "--json"], _CALL_TIMEOUT)
+    if not isinstance(notebooks, list):
+        return None
+    matches = [n for n in notebooks if n.get("title") == title and n.get("id")]
+    matches.sort(key=lambda n: n.get("updated_at", ""), reverse=True)
+    return matches[0]["id"] if matches else None
+
+
+def _wait_for_audio(nlm_command: str, notebook_id: str) -> str | None:
+    """Poll studio artifacts until the audio overview is completed. Returns the
+    audio artifact id, or None if it does not complete before the timeout."""
+    deadline = time.monotonic() + _AUDIO_POLL_TIMEOUT
+    while True:
+        artifacts = _nlm_json(
+            nlm_command, ["status", "artifacts", notebook_id, "--json"], _CALL_TIMEOUT
+        )
+        if isinstance(artifacts, list):
+            for art in artifacts:
+                if art.get("type") == "audio" and art.get("status") == "completed":
+                    return art.get("id")
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(_AUDIO_POLL_INTERVAL)
+
+
+def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
+                    out_path: Path) -> bool:
+    """Download the audio overview, retrying until the rendition is served.
+
+    nlm normalizes the studio status to 'completed' as soon as the artifact
+    reaches status code 2, but the media files 404 until it reaches code 3 a few
+    minutes later. `status artifacts --json` can't distinguish the two, so
+    _wait_for_audio returns early; retry the download until an attempt produces
+    the file (or the attempt budget is exhausted)."""
+    for attempt in range(_DOWNLOAD_MAX_ATTEMPTS):
+        result = _nlm(
+            nlm_command,
+            ["download", "audio", notebook_id, "--id", artifact_id,
+             "--output", str(out_path), "--no-progress"],
+            _CALL_TIMEOUT,
+        )
+        if result is not None and result.returncode == 0 and out_path.exists():
+            return True
+        if attempt < _DOWNLOAD_MAX_ATTEMPTS - 1:
+            time.sleep(_DOWNLOAD_RETRY_INTERVAL)
+    return False
+
+
+def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path) -> Path | None:
+    """Generate an audio overview for one PDF via the nlm CLI.
+
+    Multi-step: create a notebook, add the PDF as a source (waiting for ingest),
+    request an audio overview, poll until it completes, then download the .m4a.
+    The per-run notebook is deleted afterward. Any failure — non-zero exit,
+    timeout, missing binary, or generation never completing — returns None so
+    the orchestrator's failure budget handles them uniformly.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    title = f"rabbit-hole {pdf_path.stem} {uuid.uuid4().hex[:8]}"
+    notebook_id: str | None = None
+    try:
+        created = _nlm(nlm_command, ["notebook", "create", title], _CALL_TIMEOUT)
+        if created is None or created.returncode != 0:
+            return None
+        notebook_id = _find_notebook_id(nlm_command, title)
+        if not notebook_id:
+            return None
+
+        added = _nlm(
+            nlm_command,
+            ["source", "add", notebook_id, "--file", str(pdf_path),
+             "--wait", "--wait-timeout", str(_SOURCE_WAIT_TIMEOUT)],
+            _SOURCE_WAIT_TIMEOUT + _CALL_TIMEOUT,
+        )
+        if added is None or added.returncode != 0:
+            return None
+
+        requested = _nlm(
+            nlm_command,
+            ["audio", "create", notebook_id,
+             "--format", "deep_dive", "--length", "default", "--confirm"],
+            _CALL_TIMEOUT,
+        )
+        if requested is None or requested.returncode != 0:
+            return None
+
+        artifact_id = _wait_for_audio(nlm_command, notebook_id)
+        if not artifact_id:
+            return None
+
+        out_path = out_dir / f"{notebook_id}_audio.m4a"
+        if _download_audio(nlm_command, notebook_id, artifact_id, out_path):
+            return out_path
+        return None
+    finally:
+        if notebook_id:
+            _nlm(nlm_command, ["notebook", "delete", notebook_id, "--confirm"],
+                 _CALL_TIMEOUT)
 
 
 def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path) -> GeneratedEpisode:
@@ -53,6 +162,6 @@ def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path) -> Generated
     return GeneratedEpisode(
         paper=paper,
         audio_path=audio,
-        duration_seconds=0,  # populated by plex tagging step via mutagen
-        nlm_notebook_id="",  # populated once nlm notebook lifecycle is confirmed (manual integration)
+        duration_seconds=0,   # populated by the plex tagging step via mutagen
+        nlm_notebook_id="",   # the per-run notebook is deleted after download
     )
