@@ -240,6 +240,32 @@ def test_throttle_can_be_disabled_with_zero_interval(tmp_db, migrations_dir, mon
 
 
 @respx.mock
+def test_default_throttle_covers_non_s2_providers(tmp_db, migrations_dir, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    respx.get("https://api.unpaywall.org/v2/10.1/a").mock(return_value=httpx.Response(200, json={}))
+    respx.get("https://api.unpaywall.org/v2/10.1/b").mock(return_value=httpx.Response(200, json={}))
+    resolver._get_json("https://api.unpaywall.org/v2/10.1/a", "unpaywall", st)
+    resolver._get_json("https://api.unpaywall.org/v2/10.1/b", "unpaywall", st)
+    assert any(s > 0 for s in sleeps)  # safety-net baseline spaces non-S2 providers too
+
+
+@respx.mock
+def test_api_key_keeps_s2_safety_net_throttle(tmp_db, migrations_dir, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(keyring, "get_password", lambda service, key: "SECRET-KEY")
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    respx.get(_S2_SEARCH).mock(return_value=httpx.Response(200, json={"data": []}))
+    resolver.semantic_scholar_pdf_url("query one", state=st)
+    resolver.semantic_scholar_pdf_url("query two", state=st)
+    assert any(s > 0 for s in sleeps)  # a key relaxes S2 but does not fully disable the throttle
+
+
+@respx.mock
 def test_semantic_scholar_sends_api_key_header(tmp_db, migrations_dir, monkeypatch):
     monkeypatch.setattr(
         keyring, "get_password",

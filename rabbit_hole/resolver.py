@@ -17,8 +17,11 @@ _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*]')
 USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
 
 KEYRING_SERVICE = "rabbit_hole"
-# Semantic Scholar's keyless tier is ~1 req/sec shared; space S2 calls to stay
-# under it (a cold run can fire >1000 lookups). Patch to 0 in tests.
+# Polite throttle, keyed by API (a cold run can fire >1000 lookups). Every
+# provider gets a default safety-net interval so no endpoint can be hit in an
+# unthrottled burst; Semantic Scholar's keyless tier (~1 req/sec shared) is the
+# strictest. Patch these to 0 in tests.
+_DEFAULT_MIN_INTERVAL = 0.25
 _S2_MIN_INTERVAL = 1.1
 _MAX_RETRIES = 3
 _LAST_REQUEST_AT: dict[str, float] = {}
@@ -35,9 +38,12 @@ def _api_key(api: str) -> str | None:
 
 
 def _min_interval(api: str, has_key: bool) -> float:
-    if api == "semantic_scholar" and not has_key:
-        return _S2_MIN_INTERVAL
-    return 0.0
+    if has_key:
+        # A configured key relaxes that provider to the baseline, not to zero,
+        # so the safety net still applies.
+        return _DEFAULT_MIN_INTERVAL
+    # Per-api overrides; every other provider gets the safety-net baseline.
+    return {"semantic_scholar": _S2_MIN_INTERVAL}.get(api, _DEFAULT_MIN_INTERVAL)
 
 
 def _throttle(api: str, has_key: bool) -> None:
