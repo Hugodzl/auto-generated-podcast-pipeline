@@ -1,3 +1,4 @@
+import html
 import re
 import time
 from dataclasses import dataclass
@@ -13,6 +14,14 @@ from rabbit_hole.sources import FeedItem
 from rabbit_hole.state import State, hash_str
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+# Matches a modern arXiv ID (YYMM.NNNNN with optional vN suffix) in one of two
+# contexts to avoid false-positives on unrelated digit pairs:
+#   1. An arxiv.org URL path: /abs/<id>, /pdf/<id>, or /html/<id>
+#   2. An "arXiv:<id>" prefix (case-insensitive, optional whitespace after colon)
+ARXIV_RE = re.compile(
+    r"(?:arxiv\.org/(?:abs|pdf|html)/|arXiv:\s*)(\d{4}\.\d{4,5}(?:v\d+)?)",
+    re.IGNORECASE,
+)
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*]')
 USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
 
@@ -85,6 +94,16 @@ def extract_doi(item: FeedItem) -> str | None:
         m = DOI_RE.search(text or "")
         if m:
             return m.group(0).rstrip(".,;:)")
+    return None
+
+
+def extract_arxiv_id(item: FeedItem) -> str | None:
+    """Return the arXiv ID (e.g. '2507.14805' or '2507.14805v2') from a
+    FeedItem's link, summary, or title; None if not found."""
+    for text in (item.link, item.summary, item.title):
+        m = ARXIV_RE.search(text or "")
+        if m:
+            return m.group(1)
     return None
 
 
@@ -167,6 +186,105 @@ def semantic_scholar_pdf_url(title: str, state: State) -> str | None:
     return oa.get("url") if oa else None
 
 
+def arxiv_pdf_url(item: FeedItem) -> str | None:
+    """Return the direct arXiv PDF URL for a FeedItem, or None if no arXiv ID
+    is found.  Pure string work — makes no network requests."""
+    aid = extract_arxiv_id(item)
+    if aid:
+        return f"https://arxiv.org/pdf/{aid}"
+    return None
+
+
+def biorxiv_pdf_url(doi: str, state: State) -> str | None:
+    """Return the PDF URL for a bioRxiv/medRxiv preprint identified by DOI,
+    or None if the DOI is not found on either server.
+
+    Tries biorxiv first, then medrxiv; picks the latest integer version from
+    the collection and builds https://www.{server}.org/content/{doi}v{v}.full.pdf.
+    Both servers share the 'biorxiv' throttle bucket (cache keys include the URL
+    so they stay distinct).
+    """
+    for server in ("biorxiv", "medrxiv"):
+        url = f"https://api.biorxiv.org/details/{server}/{doi}"
+        data = _get_json(url, "biorxiv", state)
+        if not data:
+            continue
+        collection = data.get("collection") or []
+        if not collection:
+            continue
+        # Pick the entry with the highest integer version number.
+        try:
+            version = max(int(e.get("version", 0)) for e in collection)
+        except (ValueError, TypeError):
+            continue
+        if not version:
+            continue
+        return f"https://www.{server}.org/content/{doi}v{version}.full.pdf"
+    return None
+
+
+def crossref_metadata(doi: str, email: str, state: State) -> dict | None:
+    """Return author names and abstract for *doi* from Crossref, or None on failure.
+
+    This is metadata-only enrichment — it never yields a PDF and must never be
+    used as a PDF source.  Call it only after a PDF has already been confirmed.
+
+    Returns a dict with keys:
+      "authors"  — list[str] of display names (may be empty)
+      "abstract" — plain-text abstract (JATS tags stripped) or None
+    """
+    data = _get_json(
+        f"https://api.crossref.org/works/{doi}",
+        "crossref",
+        state,
+        params={"mailto": email},
+    )
+    if data is None:
+        return None
+
+    message = data.get("message") or {}
+
+    # Build author list: prefer "given family", fall back to "name" for orgs.
+    authors: list[str] = []
+    for entry in message.get("author") or []:
+        name = (f"{entry.get('given', '')} {entry.get('family', '')}").strip()
+        if not name:
+            name = (entry.get("name") or "").strip()
+        if name:
+            authors.append(name)
+
+    # Abstract: strip JATS XML tags to plain text, then decode HTML entities.
+    raw_abstract = message.get("abstract")
+    abstract: str | None = None
+    if raw_abstract:
+        abstract = html.unescape(re.sub(r"<[^>]+>", "", raw_abstract)).strip() or None
+
+    return {"authors": authors, "abstract": abstract}
+
+
+def hal_pdf_url(title: str, state: State) -> str | None:
+    """Return the main full-text URL for a HAL record matching *title*, or None.
+
+    Searches the HAL Solr API by title and returns the fileMain_s field of the
+    first result.  Records without an attached full-text file have no fileMain_s
+    and yield None.
+    """
+    # Escape embedded double-quotes so they don't break the Solr phrase query.
+    safe_title = title.replace('"', '\\"')
+    data = _get_json(
+        "https://api.archives-ouvertes.fr/search/",
+        "hal",
+        state,
+        params={"q": f'title_t:"{safe_title}"', "fl": "fileMain_s", "wt": "json", "rows": 1},
+    )
+    if not data:
+        return None
+    docs = (data.get("response") or {}).get("docs") or []
+    if not docs:
+        return None
+    return docs[0].get("fileMain_s") or None
+
+
 def _candidate_pdf_urls(item: FeedItem, doi: str | None, apis: ApisConfig,
                         state: State):
     """Yield candidate PDF URLs in cascade priority order."""
@@ -174,7 +292,18 @@ def _candidate_pdf_urls(item: FeedItem, doi: str | None, apis: ApisConfig,
         url = unpaywall_pdf_url(doi, apis.unpaywall_email, state)
         if url:
             yield url
+    # arXiv is tried before bioRxiv: its PDF URLs are deterministic and highly reliable.
+    url = arxiv_pdf_url(item)
+    if url:
+        yield url
+    if doi:
+        url = biorxiv_pdf_url(doi, state)
+        if url:
+            yield url
     url = semantic_scholar_pdf_url(item.title, state)
+    if url:
+        yield url
+    url = hal_pdf_url(item.title, state)
     if url:
         yield url
 
@@ -195,12 +324,28 @@ def resolve(item: FeedItem, apis: ApisConfig, state: State, pdf_dir: Path) -> Pa
     if pdf_path is None:
         return None
 
+    # Crossref metadata enrichment — DOI-gated, strictly AFTER the skip gate.
+    # It fills in author names and (conservatively) an abstract for papers that
+    # have no feed summary.  It never sources a PDF and never bypasses the gate.
+    authors: list[str] = []
+    abstract: str = item.summary or ""
+    if doi:
+        # Reuse the politeness email as Crossref's polite-pool mailto.
+        meta = crossref_metadata(doi, apis.unpaywall_email, state)
+        if meta:
+            if meta["authors"]:
+                authors = meta["authors"]
+            # Only replace abstract when the feed summary is blank AND Crossref
+            # has something — avoids silently changing ranker keyword scores.
+            if not (item.summary or "").strip() and meta["abstract"]:
+                abstract = meta["abstract"]
+
     text_for_lang = f"{item.title} {item.summary}".strip()
     return Paper(
         doi=doi,
         title=item.title,
-        authors=[],
-        abstract=item.summary,
+        authors=authors,
+        abstract=abstract,
         published_at=item.published_at,
         pdf_path=pdf_path,
         language=detect_language(text_for_lang),
