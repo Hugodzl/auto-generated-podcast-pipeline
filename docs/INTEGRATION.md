@@ -12,11 +12,15 @@ Use `uv run python ...` so the project virtualenv is used.
 
 ## 0. Environment prerequisite (one-time, already done once)
 
-If `uv run` fails with a Python-install **junction error**, set this persistent
-user env var and reopen the shell:
+Both env vars below steer uv off `%APPDATA%`. Windows redirects `%APPDATA%` for
+packaged (MSIX) apps into a private per-app store, which (a) caused a Python
+junction error and (b) makes a `nlm` installed from inside the Claude desktop
+app invisible to normal shells. Set them as persistent user env vars (run these
+in a **normal** terminal, not inside a packaged app) and reopen the shell:
 
 ```
 setx UV_PYTHON_INSTALL_DIR "D:\uv\python"
+setx UV_TOOL_DIR "D:\uv\tools"
 ```
 
 Then `uv sync` to ensure dependencies are installed.
@@ -25,76 +29,91 @@ Then `uv sync` to ensure dependencies are installed.
 
 ## 1. Install and authenticate the `nlm` CLI
 
+The CLI is the PyPI package **`notebooklm-mcp-cli`** (it provides the `nlm`
+executable). It is a **Python** tool — install with `uv`, NOT npm. (The earlier
+`npm install -g notebooklm-mcp-cli` was wrong: that name is not on npm.)
+
 ```
-npm install -g notebooklm-mcp-cli
-nlm --version
-nlm login
+uv tool install notebooklm-mcp-cli
+nlm --version          # confirms install (0.6.12+)
+nlm doctor             # diagnoses install + auth + browser state
+nlm login              # browser Google auth (interactive, one-time)
 ```
 
-- `nlm login` should open a browser for Google auth and persist a session.
-- [ ] Confirm `nlm login` succeeds.
-- [ ] **Verify auth persists across shells:** open a NEW terminal and run a
-      read-only `nlm` command (e.g. `nlm --help` or a list command). If it
-      requires re-login each time, note how the session is stored (cookie file?
-      token?) — the pipeline runs headless via Task Scheduler and needs auth to
-      survive between weekly runs without a browser.
+> Already installed on this machine (2026-05-27); `nlm` lives at
+> `C:\Users\hugod\.local\bin\nlm.exe`. Only `nlm login` remains.
 
-> If auth does NOT persist, this is the biggest risk to the whole pipeline.
-> Capture how `nlm` stores credentials and where, so we can make the scheduled
-> run reuse them (and add a "session stale" detector + Discord alert).
+- `nlm login` (auto mode) launches Chrome, you sign in to Google, and it caches
+  the session under `~/.notebooklm-mcp-cli`.
+- [ ] Confirm `nlm login` succeeds, then run `nlm login --check` — it should
+      report the session is valid.
+- [ ] **Headless persistence (the pipeline's #1 risk):** `nlm doctor` confirms a
+      saved Chrome profile enables headless refresh, and the session survives
+      across shells. BUT Google cookies expire in roughly **2–4 weeks**, so the
+      weekly scheduled run will eventually hit a stale session needing a fresh
+      `nlm login`.
+
+> Stale-session detector: the orchestrator can run `nlm login --check` before
+> generating (it reports invalid when stale) and fire the Discord alert so Hugo
+> knows to re-run `nlm login`. Worth wiring into the run path.
 
 ---
 
-## 2. Discover the real `nlm` audio interface
+## 2. The real `nlm` audio interface (discovered 2026-05-27)
 
-The adapter `rabbit_hole/notebooklm.py` currently **assumes** this invocation
-(a placeholder, isolated in the `_run_nlm` function):
+`nlm` has no single "PDF → audio" command. Audio overviews are generated from a
+**notebook's sources**, so the flow is multi-step. Verified via `nlm <cmd> --help`:
 
-```
-nlm audio --source <pdf_path> --out <out_dir>
-```
+1. **Create a notebook:** `nlm notebook create "<title>"` → returns a notebook ID.
+   (Robust ID capture: set a unique title, then match it via
+   `nlm list notebooks --json` / `--quiet`.)
+2. **Add the PDF and wait for ingest:**
+   `nlm source add <notebook_id> --file <pdf_path> --wait --wait-timeout <secs>`
+3. **Request the audio overview (async):**
+   `nlm audio create <notebook_id> --format deep_dive --length default --confirm`
+   (Omitting `--source-ids` uses all of the notebook's sources, i.e. just our PDF.
+   `audio create` has no `--wait`, so it returns before the audio is ready.)
+4. **Poll until ready:** `nlm status artifacts <notebook_id> --json`, read the
+   audio artifact's state in a loop, bounded by a timeout.
+5. **Download:** `nlm download audio <notebook_id> --output <path>`. The default
+   name is `./{notebook_id}_audio.m4a`, so **the real extension is `.m4a`**
+   (already first in `AUDIO_EXTS`).
+6. **Clean up:** `nlm notebook delete <notebook_id>` — each run creates a
+   notebook, so delete it afterward (~260/year otherwise).
 
-This is almost certainly not exactly right. Find the real one:
+Auth: `nlm login` (browser, one-time) caches a session in `~/.notebooklm-mcp-cli`
+that persists across shells (~2–4 wk before re-login). `nlm login --check`
+validates it — use it as the stale-session detector.
 
-```
-nlm --help
-nlm audio --help        # or whatever the audio/overview subcommand is called
-```
-
-Capture answers to these — they drive the code change in step 3:
-
-- [ ] What is the actual subcommand to generate an audio overview from a PDF?
-      (e.g. `audio`, `generate`, `overview`, `notebook ... audio` ...)
-- [ ] How is the input PDF passed? (a `--source` flag? positional arg? must the
-      PDF first be uploaded to a notebook, then audio requested?)
-- [ ] Where does the output land — a path you specify (`--out`), the cwd, or a
-      download you must fetch separately?
-- [ ] What is the output file's **actual extension**? (`.wav`? `.m4a`? `.mp3`?
-      Hugo previously guessed `.m4v`.) The current `AUDIO_EXTS` tuple is
-      `(".m4a", ".wav", ".mp3", ".m4v")` — add the real one if it's not there.
-- [ ] Is there a **notebook lifecycle**? (Does each audio generation create a
-      notebook that should be deleted afterward, or is there one reusable
-      notebook? This affects long-term clutter in your NotebookLM account.)
-- [ ] Roughly how long does one ~20-min episode take to generate? (The adapter's
-      subprocess timeout is 1800s / 30 min — raise it if generation is slower.)
+Still to confirm on the first authed run (step 3 needs these real values):
+- [ ] Exact stdout of `notebook create` (to parse the ID — else use the
+      `list notebooks --json` + unique-title fallback).
+- [ ] The JSON shape of `status artifacts --json` (which field carries the audio
+      artifact's "ready" state and its artifact ID).
+- [ ] Real generation time for a ~20-min episode (sets the poll timeout; the
+      adapter's 1800s ceiling is probably fine).
 
 ---
 
 ## 3. Update `_run_nlm` to match reality
 
-Edit `rabbit_hole/notebooklm.py`, function `_run_nlm`, with the real command
-discovered in step 2. The function's contract must stay the same: take
-`(nlm_command, pdf_path, out_dir)`, run the CLI, return the produced audio
-`Path` or `None` on any failure (it already catches timeout / missing binary /
-non-zero exit). If the real flow is multi-step (upload → request → download),
-implement all of it inside this one function.
+The flow in step 2 is confirmed multi-step, so implement all of it inside
+`_run_nlm` in `rabbit_hole/notebooklm.py`. Keep the contract: take
+`(nlm_command, pdf_path, out_dir)`, return the produced audio `Path` or `None`
+on any failure (it already catches timeout / missing binary / non-zero exit;
+wrap the new calls the same way, and delete the notebook in a `finally`).
 
-- [ ] Update the subprocess call and, if needed, `AUDIO_EXTS`.
-- [ ] If a notebook is created per run, add cleanup at the end of `_run_nlm`.
-- [ ] Re-run `uv run pytest tests/test_notebooklm.py -v` (the existing tests mock
-      the seam, so they should still pass; adjust only if you change the signature).
-- [ ] Do a real one-off generation against a sample PDF and confirm an audio file
-      appears where the code expects it.
+- [ ] Implement create → `source add --file --wait` → `audio create --confirm`
+      → poll `status artifacts --json` → `download audio --output
+      <out_dir>/<name>.m4a`. Because `--output` names the file, write directly to
+      the expected path instead of scanning `out_dir` for new files.
+- [ ] `nlm notebook delete <id>` cleanup (best-effort) at the end.
+- [ ] Do the real one-off run FIRST to capture the actual `notebook create`
+      stdout and `status artifacts --json` shape, then code the parsing against
+      reality (do not guess field names).
+- [ ] Update `tests/test_notebooklm.py` — existing tests mock the subprocess
+      seam; the multi-step flow needs new mocks. Re-run
+      `uv run pytest tests/test_notebooklm.py -v`.
 
 ---
 
@@ -111,9 +130,11 @@ Prompts for, and stores under keyring service `rabbit_hole`:
 - [ ] Run the helper.
 - [ ] Verify: `uv run python -c "import keyring; print(bool(keyring.get_password('rabbit_hole','plex_token')))"` prints `True`.
 
-> Finding your Plex token: in the Plex web app, open any item → ⋯ → Get Info →
-> View XML; the URL contains `X-Plex-Token=...`. Or see Plex's support article
-> "Finding an authentication token".
+> Finding your Plex token (Windows): Plex stores prefs in the **registry**, not a
+> Preferences.xml. Read it with:
+> `(Get-ItemProperty "HKCU:\Software\Plex, Inc.\Plex Media Server").PlexOnlineToken`
+> (Ignore the `.LocalAdminToken` file — that's a different, local-only token.)
+> Or use the web app: any item → ⋯ → Get Info → View XML; URL has `X-Plex-Token=...`.
 >
 > Discord webhook: Server Settings → Integrations → Webhooks → New Webhook →
 > Copy URL.
@@ -122,12 +143,17 @@ Prompts for, and stores under keyring service `rabbit_hole`:
 
 ## 5. Confirm the Plex library
 
-- [ ] In Plex: **Settings → Manage → Libraries**. Confirm a library named exactly
-      **"The Random Rabbit Hole"** exists.
-- [ ] Its **type must be `Music`** (NOT `Podcasts` — Plex's Podcasts type only
-      handles external RSS, not local files).
-- [ ] Its folder is `D:\Videos\PlexLibrary\Podcasts\The Random Rabbit Hole`
-      (matching `target_folder` in `config/config.toml`).
+Confirmed 2026-05-27 via the Plex API: the target is the existing **"Podcasts"**
+library (key 4), Plex **type = Music** (`artist`) — despite the name, NOT the
+Podcasts type — scanning `D:\Videos\PlexLibrary\Podcasts`, which already has a
+`The Random Rabbit Hole\` subfolder. Episodes file there and are tagged
+album="The Random Rabbit Hole" / artist="Hugo Déziel", so Plex groups them as
+that album. Config therefore uses `library_name = "Podcasts"` and
+`target_folder = "D:/Videos/PlexLibrary/Podcasts/The Random Rabbit Hole"`.
+
+- [ ] (Optional) For a dedicated "The Random Rabbit Hole" library instead, create
+      a **Music**-type library on that exact folder and set `library_name` to it —
+      but don't nest it under the Podcasts library's path, or Plex indexes twice.
 
 ---
 
@@ -199,7 +225,8 @@ interface) so the adapter and tests reflect reality.
 | Symptom | Likely cause / fix |
 |---|---|
 | `uv run` Python-install junction error | `setx UV_PYTHON_INSTALL_DIR "D:\uv\python"`, reopen shell |
-| Run aborts after 5 episodes, Discord says "failed" | 5 consecutive `nlm` failures — likely `nlm` auth stale (re-`nlm login`) or wrong command in `_run_nlm` |
+| `nlm` → "uv trampoline failed to canonicalize script path" | `nlm` was installed into a redirected `%APPDATA%` location (happens when installed from inside the Claude/MSIX app) and isn't visible to this shell. Reinstall to `D:\`: `setx UV_TOOL_DIR "D:\uv\tools"`, reopen shell, `uv tool install --force notebooklm-mcp-cli`. (Installing from a normal terminal also avoids it.) |
+| Run aborts after 5 episodes, Discord says "failed" | 5 consecutive `nlm` failures — likely `nlm` auth stale (run `nlm login --check`; if invalid, re-`nlm login`) or wrong command in `_run_nlm` |
 | No episodes produced, no errors | No open-access PDF found for ranked papers (v1 cascade is narrow); widen via Task 12 |
 | Audio file in folder but not in Plex | Plex refresh is best-effort; wait for Plex's own scan, or check library type is `Music` and token is valid |
 | Episodes never appear / always re-aired | Check `data\state.db` `episodes` table is being written (record happens after filing) |
