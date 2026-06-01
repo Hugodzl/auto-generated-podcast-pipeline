@@ -62,3 +62,93 @@ def test_tag_audio_sets_album_artist_for_plex_grouping(tmp_path, monkeypatch):
     assert fake.get("albumartist") == "Hugo Déziel"
     assert fake.get("artist") == "Hugo Déziel"
     assert fake.get("album") == "The Random Rabbit Hole"
+
+
+# --- _unify_albums --------------------------------------------------------
+# Plex's tv.plex.agents.music agent mints a NEW album per scanned track, so
+# identical album/albumartist tags are NOT enough to keep episodes together
+# (confirmed live: two tracks sharing album + albumartist + year stayed in
+# separate albums even with a shared MusicBrainz Album Id). The only thing the
+# agent respects is an explicit merge, so after each refresh we fold every
+# same-named album back into the largest/oldest one.
+
+
+class _FakeAlbum:
+    def __init__(self, key, ntracks, title="The Random Rabbit Hole",
+                 artist="Hugo Déziel"):
+        self.ratingKey = key
+        self._n = ntracks
+        self.title = title
+        self.parentTitle = artist
+
+    def tracks(self):
+        return list(range(self._n))
+
+
+class _FakeSection:
+    def __init__(self, albums):
+        self._albums = albums
+
+    def albums(self):
+        return self._albums
+
+
+class _FakeSession:
+    def put(self):  # pragma: no cover - identity marker only
+        pass
+
+
+class _FakeServer:
+    def __init__(self):
+        self._session = _FakeSession()
+        self.calls = []
+
+    def query(self, key, method=None):
+        self.calls.append((key, method))
+
+
+def test_unify_albums_merges_strays_into_largest_album():
+    from rabbit_hole.plex import _unify_albums
+
+    section = _FakeSection([
+        _FakeAlbum(2094, 1),
+        _FakeAlbum(1933, 6),  # canonical: most tracks
+        _FakeAlbum(2096, 1),
+    ])
+    server = _FakeServer()
+    _unify_albums(section, server)
+
+    assert len(server.calls) == 1
+    key, method = server.calls[0]
+    assert key == "/library/metadata/1933/merge?ids=2094,2096"
+    assert method == server._session.put
+
+
+def test_unify_albums_noop_when_single_matching_album():
+    from rabbit_hole.plex import _unify_albums
+
+    section = _FakeSection([
+        _FakeAlbum(1933, 6),
+        _FakeAlbum(5000, 3, title="Some Other Album"),
+    ])
+    server = _FakeServer()
+    _unify_albums(section, server)
+
+    assert server.calls == []
+
+
+def test_unify_albums_ignores_other_titles_and_artists():
+    from rabbit_hole.plex import _unify_albums
+
+    section = _FakeSection([
+        _FakeAlbum(1933, 6),
+        _FakeAlbum(2094, 1),
+        _FakeAlbum(5000, 9, title="Other Album"),       # wrong title
+        _FakeAlbum(5001, 9, artist="Various Artists"),  # wrong artist
+    ])
+    server = _FakeServer()
+    _unify_albums(section, server)
+
+    assert len(server.calls) == 1
+    key, _ = server.calls[0]
+    assert key == "/library/metadata/1933/merge?ids=2094"
