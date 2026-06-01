@@ -78,4 +78,4 @@ def test_boost_bad_input_leaves_original_and_raises(tmp_path):
     with pytest.raises(AudioBoostError):
         boost_loudness(junk)
     assert junk.read_bytes() == b"not audio at all"        # original untouched
-    assert not (tmp_path / "bad.boost.tmp.m4a").exists()   # temp cleaned up
+    assert not list(tmp_path.glob("*.tmp.m4a"))            # temp cleaned up

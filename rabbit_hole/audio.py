@@ -1,5 +1,6 @@
 import os
 import subprocess
+import uuid
 from pathlib import Path
 
 _PROBE_TIMEOUT = 30      # seconds for the ffprobe bitrate read
@@ -31,7 +32,7 @@ def _source_bitrate(path: Path, ffprobe_command: str) -> str:
     return f"{kbps}k"
 
 
-def boost_loudness(path, *, gain: float = 1.4, peak_ceiling_db: float = -1.0,
+def boost_loudness(path: str | Path, *, gain: float = 1.4, peak_ceiling_db: float = -1.0,
                    ffmpeg_command: str = "ffmpeg",
                    ffprobe_command: str = "ffprobe") -> None:
     """Re-encode `path` in place, louder by `gain`x with a true-peak ceiling.
@@ -47,7 +48,7 @@ def boost_loudness(path, *, gain: float = 1.4, peak_ceiling_db: float = -1.0,
 
     limit = 10 ** (peak_ceiling_db / 20)              # -1 dBFS -> 0.8913 linear
     bitrate = _source_bitrate(path, ffprobe_command)
-    tmp = path.with_name(f"{path.stem}.boost.tmp{path.suffix}")  # keep .m4a so ffmpeg infers the muxer
+    tmp = path.with_name(f"{path.stem}.boost.{uuid.uuid4().hex[:8]}.tmp{path.suffix}")  # unique temp; keep .m4a so ffmpeg infers the muxer
 
     cmd = [
         ffmpeg_command, "-y", "-loglevel", "error", "-i", str(path),
