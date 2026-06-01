@@ -204,3 +204,51 @@ def test_run_pipeline_files_in_descending_score_order(tmp_path, monkeypatch):
     count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
     assert count == 2
     assert filed == ["Whale fresh", "Whale stale"]  # fresh scores higher -> filed first
+
+
+def test_run_pipeline_boosts_audio_before_filing(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config()
+    item = _item("Whale song", "http://x/10.1234/whale")
+    paper = _paper_for(item, doi="10.1234/whale")
+    events = []
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: _ep(paper, tmp_path))
+    monkeypatch.setattr("rabbit_hole.run.file_episode",
+                        lambda e, b, p, t: (events.append(("file", e.audio_path)) or (tmp_path / "f.m4a")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+    monkeypatch.setattr("rabbit_hole.run.boost_loudness",
+                        lambda path, **k: events.append(("boost", path)))
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 1
+    # boost runs on the generated path, before filing
+    assert events == [("boost", tmp_path / "a.m4a"), ("file", tmp_path / "a.m4a")]
+
+
+def test_run_pipeline_files_even_when_boost_fails(tmp_path, monkeypatch):
+    from rabbit_hole.audio import AudioBoostError
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config()
+    item = _item("Whale song", "http://x/10.1234/whale")
+    paper = _paper_for(item, doi="10.1234/whale")
+    filed = []
+
+    def boom(*a, **k):
+        raise AudioBoostError("ffmpeg blew up")
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: _ep(paper, tmp_path))
+    monkeypatch.setattr("rabbit_hole.run.file_episode",
+                        lambda e, b, p, t: (filed.append(e) or (tmp_path / "f.m4a")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+    monkeypatch.setattr("rabbit_hole.run.boost_loudness", boom)
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 1            # fail-soft: episode still filed despite boost failure
+    assert len(filed) == 1

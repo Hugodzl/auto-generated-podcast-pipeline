@@ -5,6 +5,7 @@ import keyring
 
 from rabbit_hole.config import Config, load_config
 from rabbit_hole.logging_config import configure_logging, post_discord
+from rabbit_hole.audio import AudioBoostError, boost_loudness
 from rabbit_hole.notebooklm import NotebookLMError, generate
 from rabbit_hole.plex import file_episode
 from rabbit_hole.ranker import rank
@@ -63,6 +64,12 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path, logg
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 raise
             continue
+        try:
+            boost_loudness(ep.audio_path, gain=cfg.audio.gain_factor)
+        except AudioBoostError as e:
+            # Non-fatal: file the (quiet) episode rather than drop it. Not counted
+            # against the consecutive-nlm-failure budget — it's post-generation.
+            logger.error("audio_boost_failed", title=paper.title, error=str(e))
         dest = file_episode(ep, s.topic_bucket, cfg.plex, token)
         state.record_episode(
             doi=paper.doi, title_hash=hash_str(paper.title), title=paper.title,
