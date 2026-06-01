@@ -157,8 +157,14 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
                  _CALL_TIMEOUT)
 
 
-def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path) -> GeneratedEpisode:
-    audio = _run_nlm(config.nlm_command, paper.pdf_path, Path(out_dir))
+def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,
+             audio_format: str | None = None, audio_length: str | None = None,
+             focus: str | None = None) -> GeneratedEpisode:
+    fmt = audio_format if audio_format is not None else config.audio_format
+    length = audio_length if audio_length is not None else config.audio_length
+    foc = focus if focus is not None else config.focus
+    audio = _run_nlm(config.nlm_command, paper.pdf_path, Path(out_dir),
+                     audio_format=fmt, audio_length=length, focus=foc)
     if audio is None or not audio.exists():
         raise NotebookLMError(f"nlm produced no audio for {paper.title!r}")
     return GeneratedEpisode(

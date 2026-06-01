@@ -28,7 +28,7 @@ def test_generate_success(tmp_path, monkeypatch):
     audio = tmp_path / "out.m4a"
     audio.write_bytes(b"fake audio")
 
-    def fake_run_nlm(cmd, pdf_path, out_dir):
+    def fake_run_nlm(cmd, pdf_path, out_dir, **kwargs):
         return audio  # pretend nlm produced this file
 
     monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
@@ -277,3 +277,36 @@ def test_nlm_decodes_nlm_utf8_output_not_locale():
     assert result is not None
     assert result.returncode == 0
     assert result.stdout == raw.decode("utf-8")
+
+
+def test_generate_passes_config_audio_params_to_run_nlm(tmp_path, monkeypatch):
+    paper = make_paper(tmp_path)
+    audio = tmp_path / "out.m4a"
+    audio.write_bytes(b"a")
+    captured = {}
+
+    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus):
+        captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus)
+        return audio
+
+    monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
+    generate(paper, NotebookLMConfig(audio_format="brief", audio_length="long", focus="X"),
+             out_dir=tmp_path)
+    assert captured == {"audio_format": "brief", "audio_length": "long", "focus": "X"}
+
+
+def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
+    paper = make_paper(tmp_path)
+    audio = tmp_path / "out.m4a"
+    audio.write_bytes(b"a")
+    captured = {}
+
+    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus):
+        captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus)
+        return audio
+
+    monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
+    generate(paper, NotebookLMConfig(), out_dir=tmp_path, audio_length="long")
+    assert captured["audio_length"] == "long"        # override wins
+    assert captured["audio_format"] == "deep_dive"    # config default
+    assert captured["focus"] == ""                    # config default
