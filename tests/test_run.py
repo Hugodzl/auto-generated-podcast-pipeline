@@ -50,6 +50,14 @@ def _ep(paper, tmp_path):
                             duration_seconds=1, nlm_notebook_id="n")
 
 
+@pytest.fixture(autouse=True)
+def _noop_boost(monkeypatch):
+    """Stub the ffmpeg loudness boost by default so pipeline tests exercise the
+    happy path without shelling out (the synthetic ep.audio_path doesn't exist).
+    Tests that assert on boost behavior re-patch rabbit_hole.run.boost_loudness."""
+    monkeypatch.setattr("rabbit_hole.run.boost_loudness", lambda *a, **k: None)
+
+
 def test_run_pipeline_files_episode(tmp_path, monkeypatch):
     st = State(tmp_path / "state.db", MIGRATIONS)
     st.init()
