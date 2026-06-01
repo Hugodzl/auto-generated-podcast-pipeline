@@ -8,7 +8,7 @@ from rabbit_hole.logging_config import configure_logging, post_discord
 from rabbit_hole.notebooklm import NotebookLMError, generate
 from rabbit_hole.plex import file_episode
 from rabbit_hole.ranker import rank
-from rabbit_hole.resolver import resolve
+from rabbit_hole.resolver import resolve, extract_doi
 from rabbit_hole.sources import poll_all
 from rabbit_hole.state import State, hash_str
 
@@ -31,42 +31,47 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path, logg
     items = list(poll_all(cfg, state))
     logger.info("ingested", count=len(items))
 
-    # 2. resolve to PDFs
-    papers = []
-    for item in items:
-        paper = resolve(item, cfg.apis, state, pdf_dir=pdf_dir)
-        if paper:
-            papers.append(paper)
-    logger.info("resolved", count=len(papers))
+    # 2. drop already-published items BEFORE resolving (metadata only, no PDF needed).
+    #    extract_doi(item) and hash_str(item.title) are exactly what resolve()/record_episode
+    #    use, so this is identical to the former post-resolve dedup, just one step earlier.
+    items = [it for it in items
+             if not state.has_episode(doi=extract_doi(it), title_hash=hash_str(it.title))]
 
-    # 3. rank, skipping already-published papers
-    papers = [p for p in papers
-              if not state.has_episode(doi=p.doi, title_hash=hash_str(p.title))]
-    scored = rank(papers, cfg.topics, cfg.ranking, limit=cfg.schedule.episodes_per_run)
-    logger.info("ranked", count=len(scored))
+    # 3. rank the raw items (no PDFs yet); rank returns the full score>0 list, sorted desc.
+    ranked = rank(items, cfg.topics, cfg.ranking)
+    logger.info("ranked", count=len(ranked))
 
-    # 4. generate + file
+    # 4. walk the ranked list: resolve lazily, generate + file, stop once enough episodes exist.
     token = _plex_token(cfg)
+    target = cfg.schedule.episodes_per_run
     generated = 0
     failures = 0
-    for s in scored:
+    for s in ranked:
+        if generated >= target:
+            break
+        paper = resolve(s.item, cfg.apis, state, pdf_dir=pdf_dir)
+        if paper is None:
+            # No PDF found for this item. Neutral: not an nlm failure, so the
+            # consecutive-failure budget is untouched. Advance to the next candidate.
+            logger.info("resolve_skipped", title=s.item.title)
+            continue
         try:
-            ep = generate(s.paper, cfg.notebooklm, out_dir=audio_dir)
+            ep = generate(paper, cfg.notebooklm, out_dir=audio_dir)
         except NotebookLMError as e:
             failures += 1
-            logger.error("nlm_failed", title=s.paper.title, error=str(e))
+            logger.error("nlm_failed", title=paper.title, error=str(e))
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 raise
             continue
         dest = file_episode(ep, s.topic_bucket, cfg.plex, token)
         state.record_episode(
-            doi=s.paper.doi, title_hash=hash_str(s.paper.title), title=s.paper.title,
-            language=s.paper.language, source_name=s.paper.source.source_name,
+            doi=paper.doi, title_hash=hash_str(paper.title), title=paper.title,
+            language=paper.language, source_name=paper.source.source_name,
             topic_bucket=s.topic_bucket, score=s.score,
-            pdf_path=str(s.paper.pdf_path), audio_path=str(dest),
+            pdf_path=str(paper.pdf_path), audio_path=str(dest),
         )
         generated += 1
-        logger.info("filed", title=s.paper.title, path=str(dest))
+        logger.info("filed", title=paper.title, path=str(dest))
         failures = 0  # reset: budget is CONSECUTIVE nlm failures
     return generated
 

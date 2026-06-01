@@ -3,12 +3,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from rabbit_hole.config import RankingConfig, TopicConfig
-from rabbit_hole.resolver import Paper
+from rabbit_hole.sources import FeedItem
 
 
 @dataclass
-class ScoredPaper:
-    paper: Paper
+class ScoredItem:
+    item: FeedItem
     score: float
     topic_bucket: str
 
@@ -26,8 +26,8 @@ def recency_decay(published_at: datetime, cfg: RankingConfig) -> float:
     return 0.5 ** (age_days / cfg.ranking_half_life())
 
 
-def _best_topic(paper: Paper, topics: list[TopicConfig]) -> tuple[str, float]:
-    text = f"{paper.title} {paper.abstract}"
+def _best_topic(item: FeedItem, topics: list[TopicConfig]) -> tuple[str, float]:
+    text = f"{item.title} {item.summary}"
     best_name, best_val = "", 0.0
     for t in topics:
         hits = keyword_hits(text, t.keywords)
@@ -37,15 +37,14 @@ def _best_topic(paper: Paper, topics: list[TopicConfig]) -> tuple[str, float]:
     return best_name, best_val
 
 
-def score_paper(paper: Paper, topics: list[TopicConfig], cfg: RankingConfig) -> ScoredPaper:
-    bucket, topic_val = _best_topic(paper, topics)
-    score = paper.source.source_weight * topic_val * recency_decay(paper.published_at, cfg)
-    return ScoredPaper(paper=paper, score=score, topic_bucket=bucket)
+def score_item(item: FeedItem, topics: list[TopicConfig], cfg: RankingConfig) -> ScoredItem:
+    bucket, topic_val = _best_topic(item, topics)
+    score = item.source_weight * topic_val * recency_decay(item.published_at, cfg)
+    return ScoredItem(item=item, score=score, topic_bucket=bucket)
 
 
-def rank(papers: list[Paper], topics: list[TopicConfig], cfg: RankingConfig,
-         limit: int) -> list[ScoredPaper]:
-    scored = [score_paper(p, topics, cfg) for p in papers]
+def rank(items: list[FeedItem], topics: list[TopicConfig], cfg: RankingConfig) -> list[ScoredItem]:
+    scored = [score_item(it, topics, cfg) for it in items]
     scored = [s for s in scored if s.score > 0]
     scored.sort(key=lambda s: s.score, reverse=True)
-    return scored[:limit]
+    return scored

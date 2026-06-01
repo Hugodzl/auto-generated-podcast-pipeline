@@ -1,9 +1,7 @@
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from rabbit_hole.config import RankingConfig, TopicConfig
-from rabbit_hole.ranker import ScoredPaper, keyword_hits, recency_decay, score_paper, rank
-from rabbit_hole.resolver import Paper
+from rabbit_hole.ranker import ScoredItem, keyword_hits, rank, recency_decay, score_item
 from rabbit_hole.sources import FeedItem
 
 TOPICS = [
@@ -12,12 +10,10 @@ TOPICS = [
 ]
 
 
-def make_paper(title, abstract, days_old=0, source_weight=1.0, doi="10.1/x"):
+def make_item(title, summary, days_old=0, source_weight=1.0, link="http://x"):
     pub = datetime.now(timezone.utc) - timedelta(days=days_old)
-    item = FeedItem(source_name="S", source_weight=source_weight, title=title,
-                    summary=abstract, link="http://x", published_at=pub, raw={})
-    return Paper(doi=doi, title=title, authors=[], abstract=abstract,
-                 published_at=pub, pdf_path=Path("p.pdf"), language="en", source=item)
+    return FeedItem(source_name="S", source_weight=source_weight, title=title,
+                    summary=summary, link=link, published_at=pub, raw={})
 
 
 def test_keyword_hits_counts_unique_keywords():
@@ -31,25 +27,34 @@ def test_recency_decay_halves_at_half_life():
     assert 0.49 < decay < 0.51
 
 
-def test_score_picks_best_topic_bucket():
+def test_score_item_picks_best_topic_bucket():
     cfg = RankingConfig(recency_half_life_days=30)
-    p = make_paper("Whale song", "primate and whale cognition", days_old=0)
-    scored = score_paper(p, TOPICS, cfg)
+    it = make_item("Whale song", "primate and whale cognition", days_old=0)
+    scored = score_item(it, TOPICS, cfg)
+    assert isinstance(scored, ScoredItem)
+    assert scored.item is it
     assert scored.topic_bucket == "Animals"
     assert scored.score > 0
 
 
-def test_rank_orders_by_score_and_limits():
+def test_rank_orders_by_score_descending():
     cfg = RankingConfig(recency_half_life_days=30)
-    fresh = make_paper("Transformer study", "neural network transformer", days_old=1, doi="10.1/a")
-    stale = make_paper("Old transformer", "neural network", days_old=300, doi="10.1/b")
-    ranked = rank([stale, fresh], TOPICS, cfg, limit=1)
-    assert len(ranked) == 1
-    assert ranked[0].paper.doi == "10.1/a"
+    fresh = make_item("Transformer study", "neural network transformer", days_old=1, link="http://a")
+    stale = make_item("Old transformer", "neural network", days_old=300, link="http://b")
+    ranked = rank([stale, fresh], TOPICS, cfg)
+    assert [s.item.link for s in ranked] == ["http://a", "http://b"]  # fresh first
 
 
-def test_rank_drops_zero_score_papers():
+def test_rank_returns_full_list_not_truncated():
     cfg = RankingConfig(recency_half_life_days=30)
-    irrelevant = make_paper("Cooking pasta", "recipes and food", days_old=1)
-    ranked = rank([irrelevant], TOPICS, cfg, limit=5)
+    items = [make_item(f"Transformer {i}", "neural network", days_old=i, link=f"http://{i}")
+             for i in range(20)]
+    ranked = rank(items, TOPICS, cfg)
+    assert len(ranked) == 20  # rank no longer slices to a limit
+
+
+def test_rank_drops_zero_score_items():
+    cfg = RankingConfig(recency_half_life_days=30)
+    irrelevant = make_item("Cooking pasta", "recipes and food", days_old=1)
+    ranked = rank([irrelevant], TOPICS, cfg)
     assert ranked == []

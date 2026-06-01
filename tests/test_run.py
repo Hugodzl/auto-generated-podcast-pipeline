@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -33,27 +33,33 @@ def _config(episodes_per_run=1):
     })
 
 
-def _make_paper(title, doi):
-    pub = datetime.now(timezone.utc)
-    item = FeedItem(source_name="Nature", source_weight=1.0, title=title,
-                    summary="whale communication", link=f"http://x/{doi}",
-                    published_at=pub, raw={})
-    return Paper(doi=doi, title=title, authors=[], abstract="whale communication",
-                 published_at=pub, pdf_path=Path("p.pdf"), language="en", source=item)
+def _item(title, link, summary="whale communication", days_old=0, source_weight=1.0):
+    pub = datetime.now(timezone.utc) - timedelta(days=days_old)
+    return FeedItem(source_name="Nature", source_weight=source_weight, title=title,
+                    summary=summary, link=link, published_at=pub, raw={})
+
+
+def _paper_for(item, doi=None):
+    return Paper(doi=doi, title=item.title, authors=[], abstract=item.summary,
+                 published_at=item.published_at, pdf_path=Path("p.pdf"),
+                 language="en", source=item)
+
+
+def _ep(paper, tmp_path):
+    return GeneratedEpisode(paper=paper, audio_path=tmp_path / "a.m4a",
+                            duration_seconds=1, nlm_notebook_id="n")
 
 
 def test_run_pipeline_files_episode(tmp_path, monkeypatch):
     st = State(tmp_path / "state.db", MIGRATIONS)
     st.init()
     cfg = _config()
+    item = _item("Whale song", "http://x/10.1234/whale")
+    paper = _paper_for(item, doi="10.1234/whale")
 
-    paper = _make_paper("Whale song", "10.1/x")
-    ep = GeneratedEpisode(paper=paper, audio_path=tmp_path / "a.m4a",
-                          duration_seconds=1200, nlm_notebook_id="n1")
-
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([paper.source]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
-    monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: ep)
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: _ep(paper, tmp_path))
     filed = []
     monkeypatch.setattr("rabbit_hole.run.file_episode",
                         lambda e, bucket, plexcfg, token: (filed.append((e, bucket)) or (tmp_path / "f.m4a")))
@@ -63,38 +69,40 @@ def test_run_pipeline_files_episode(tmp_path, monkeypatch):
     assert count == 1
     assert len(filed) == 1
     assert filed[0][1] == "Animals"  # topic_bucket passed through
-    assert st.has_episode(doi="10.1/x", title_hash=hash_str("Whale song")) is True
+    assert st.has_episode(doi="10.1234/whale", title_hash=hash_str("Whale song")) is True
 
 
-def test_run_pipeline_skips_already_published(tmp_path, monkeypatch):
+def test_run_pipeline_skips_already_published_before_resolving(tmp_path, monkeypatch):
+    # Dedup happens pre-resolve: an already-published item must not even be resolved.
     st = State(tmp_path / "state.db", MIGRATIONS)
     st.init()
     cfg = _config()
-    paper = _make_paper("Whale song", "10.1/x")
-    # pre-record the episode so it should be skipped
-    st.record_episode(doi="10.1/x", title_hash=hash_str("Whale song"), title="Whale song",
+    item = _item("Whale song", "http://x/10.1234/whale")
+    st.record_episode(doi="10.1234/whale", title_hash=hash_str("Whale song"), title="Whale song",
                       language="en", source_name="Nature", topic_bucket="Animals",
                       score=1.0, pdf_path="p.pdf", audio_path="a.m4a")
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([paper.source]))
-    monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
-    def _should_not_be_called(*a, **k):
-        raise AssertionError("generate should not run for an already-published paper")
-    monkeypatch.setattr("rabbit_hole.run.generate", _should_not_be_called)
+    def _no_resolve(*a, **k):
+        raise AssertionError("resolve must not run for an already-published item")
+
+    def _no_generate(*a, **k):
+        raise AssertionError("generate must not run for an already-published item")
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", _no_resolve)
+    monkeypatch.setattr("rabbit_hole.run.generate", _no_generate)
     monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
 
     count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
     assert count == 0
 
 
-def test_run_pipeline_aborts_after_5_failures(tmp_path, monkeypatch):
+def test_run_pipeline_aborts_after_5_consecutive_failures(tmp_path, monkeypatch):
     st = State(tmp_path / "state.db", MIGRATIONS)
     st.init()
     cfg = _config(episodes_per_run=5)
-
-    papers = [_make_paper(f"Whale paper {i}", f"10.1/{i}") for i in range(5)]
-    items = [p.source for p in papers]
-    by_link = {p.source.link: p for p in papers}
+    items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(5)]
+    by_link = {it.link: _paper_for(it) for it in items}
 
     monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
@@ -111,18 +119,15 @@ def test_run_pipeline_does_not_abort_on_nonconsecutive_failures(tmp_path, monkey
     st = State(tmp_path / "state.db", MIGRATIONS)
     st.init()
     cfg = _config(episodes_per_run=8)
-
-    papers = [_make_paper(f"Whale paper {i}", f"10.1/{i}") for i in range(8)]
-    items = [p.source for p in papers]
-    by_link = {p.source.link: p for p in papers}
+    items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(8)]
+    by_link = {it.link: _paper_for(it) for it in items}
 
     # Pattern F F S F F S F F : 6 failures, 2 successes, max 2 consecutive failures.
     outcomes = iter([False, False, True, False, False, True, False, False])
 
     def fake_generate(paper, cfg_, out_dir):
         if next(outcomes):
-            return GeneratedEpisode(paper=paper, audio_path=tmp_path / "a.m4a",
-                                    duration_seconds=1, nlm_notebook_id="n")
+            return _ep(paper, tmp_path)
         raise NotebookLMError("boom")
 
     monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
@@ -133,3 +138,69 @@ def test_run_pipeline_does_not_abort_on_nonconsecutive_failures(tmp_path, monkey
 
     count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
     assert count == 2  # the two successes were filed; run did not abort
+
+
+def test_run_pipeline_resolves_lazily_until_target_met(tmp_path, monkeypatch):
+    # 10 eligible items, target 2 -> resolve is called only until 2 episodes are made.
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config(episodes_per_run=2)
+    items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(10)]
+    by_link = {it.link: _paper_for(it) for it in items}
+    resolve_calls = []
+
+    def fake_resolve(item, *a, **k):
+        resolve_calls.append(item.link)
+        return by_link[item.link]
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.resolve", fake_resolve)
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
+    monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 2
+    assert len(resolve_calls) == 2  # stopped after 2; did not resolve the whole corpus
+
+
+def test_run_pipeline_skips_resolve_misses_without_aborting(tmp_path, monkeypatch):
+    # First 6 items fail to resolve (None); 6 > MAX_CONSECUTIVE_FAILURES(5).
+    # Resolve misses must NOT count as nlm failures, so the run still completes.
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config(episodes_per_run=2)
+    items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(8)]
+    papers = {it.link: (None if i < 6 else _paper_for(it)) for i, it in enumerate(items)}
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: papers[item.link])
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
+    monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 2  # no abort despite 6 consecutive resolve misses
+
+
+def test_run_pipeline_files_in_descending_score_order(tmp_path, monkeypatch):
+    # Selection order comes from rank (recency), not from poll order.
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config(episodes_per_run=2)
+    fresh = _item("Whale fresh", "http://x/fresh", days_old=1)
+    stale = _item("Whale stale", "http://x/stale", days_old=300)
+    by_link = {fresh.link: _paper_for(fresh), stale.link: _paper_for(stale)}
+
+    # poll yields stale first to prove ordering comes from rank, not poll order
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([stale, fresh]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
+    filed = []
+    monkeypatch.setattr("rabbit_hole.run.file_episode",
+                        lambda e, bucket, p, t: (filed.append(e.paper.title) or (tmp_path / "f.m4a")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 2
+    assert filed == ["Whale fresh", "Whale stale"]  # fresh scores higher -> filed first
