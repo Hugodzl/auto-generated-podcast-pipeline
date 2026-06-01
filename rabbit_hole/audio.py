@@ -1,0 +1,75 @@
+import os
+import subprocess
+from pathlib import Path
+
+_PROBE_TIMEOUT = 30      # seconds for the ffprobe bitrate read
+_ENCODE_TIMEOUT = 600    # seconds for one re-encode (ample for a 90 MB / ~40 min file)
+_DEFAULT_BITRATE = "192k"
+
+
+class AudioBoostError(RuntimeError):
+    pass
+
+
+def _source_bitrate(path: Path, ffprobe_command: str) -> str:
+    """Overall container bitrate as an ffmpeg -b:a value (e.g. '256k'). Falls back
+    to the default if it can't be read, so we never silently downgrade quality."""
+    try:
+        result = subprocess.run(
+            [ffprobe_command, "-v", "error", "-show_entries", "format=bit_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return _DEFAULT_BITRATE
+    raw = result.stdout.strip()
+    if result.returncode != 0 or not raw.isdigit():
+        return _DEFAULT_BITRATE
+    default_kbps = int(_DEFAULT_BITRATE.rstrip("k"))
+    kbps = max(default_kbps, round(int(raw) / 1000))  # never re-encode below the baseline quality
+    return f"{kbps}k"
+
+
+def boost_loudness(path, *, gain: float = 1.4, peak_ceiling_db: float = -1.0,
+                   ffmpeg_command: str = "ffmpeg",
+                   ffprobe_command: str = "ffprobe") -> None:
+    """Re-encode `path` in place, louder by `gain`x with a true-peak ceiling.
+
+    `volume=<gain>` does the loudness work; `alimiter` catches only peaks that
+    would breach `peak_ceiling_db`, so nothing clips. Encodes to a sibling temp
+    file and atomically replaces the original. On any ffmpeg/ffprobe failure the
+    original is left untouched and AudioBoostError is raised.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise AudioBoostError(f"audio file not found: {path}")
+
+    limit = 10 ** (peak_ceiling_db / 20)              # -1 dBFS -> 0.8913 linear
+    bitrate = _source_bitrate(path, ffprobe_command)
+    tmp = path.with_name(f"{path.stem}.boost.tmp{path.suffix}")  # keep .m4a so ffmpeg infers the muxer
+
+    cmd = [
+        ffmpeg_command, "-y", "-loglevel", "error", "-i", str(path),
+        "-af", f"volume={gain},alimiter=limit={limit:.4f}:level=false",
+        "-c:a", "aac", "-b:a", bitrate, "-map_metadata", "0",
+        str(tmp),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
+                                timeout=_ENCODE_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        tmp.unlink(missing_ok=True)
+        raise AudioBoostError(f"ffmpeg failed for {path}: {e}") from e
+
+    if result.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise AudioBoostError(
+            f"ffmpeg returned {result.returncode} for {path}: {result.stderr.strip()}"
+        )
+    try:
+        os.replace(tmp, path)   # atomic; on Windows can fail if Plex holds the file open
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        raise AudioBoostError(f"could not replace {path}: {e}") from e
