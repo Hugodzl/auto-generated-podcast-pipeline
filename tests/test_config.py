@@ -84,3 +84,42 @@ def test_empty_topics_rejected(tmp_path):
     )
     with pytest.raises(ValueError):
         load_config(write_config(tmp_path, body))
+
+
+def test_notebooklm_audio_defaults(tmp_path):
+    cfg = load_config(write_config(tmp_path, MINIMAL))
+    assert cfg.notebooklm.audio_format == "deep_dive"
+    assert cfg.notebooklm.audio_length == "default"
+    assert cfg.notebooklm.focus == ""
+
+
+def test_notebooklm_audio_overrides_loaded(tmp_path):
+    body = MINIMAL.replace(
+        'nlm_command = "nlm"',
+        'nlm_command = "nlm"\n'
+        '    audio_format = "debate"\n'
+        '    audio_length = "long"\n'
+        '    focus = "methods"',
+    )
+    cfg = load_config(write_config(tmp_path, body))
+    assert cfg.notebooklm.audio_format == "debate"
+    assert cfg.notebooklm.audio_length == "long"
+    assert cfg.notebooklm.focus == "methods"
+
+
+def test_invalid_audio_length_rejected(tmp_path):
+    body = MINIMAL.replace(
+        'nlm_command = "nlm"',
+        'nlm_command = "nlm"\n    audio_length = "verylong"',
+    )
+    with pytest.raises(ValueError):
+        load_config(write_config(tmp_path, body))
+
+
+def test_invalid_audio_format_rejected(tmp_path):
+    body = MINIMAL.replace(
+        'nlm_command = "nlm"',
+        'nlm_command = "nlm"\n    audio_format = "podcast"',
+    )
+    with pytest.raises(ValueError):
+        load_config(write_config(tmp_path, body))

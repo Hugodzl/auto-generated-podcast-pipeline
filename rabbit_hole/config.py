@@ -1,5 +1,6 @@
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -32,6 +33,9 @@ class SourceConfig(BaseModel):
 
 class NotebookLMConfig(BaseModel):
     nlm_command: str = "nlm"
+    audio_format: Literal["deep_dive", "brief", "critique", "debate"] = "deep_dive"
+    audio_length: Literal["short", "default", "long"] = "default"
+    focus: str = ""
 
 
 class PlexConfig(BaseModel):
