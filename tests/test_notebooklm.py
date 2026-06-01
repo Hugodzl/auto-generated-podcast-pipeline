@@ -120,6 +120,51 @@ def _install_fake(monkeypatch, fake):
     monkeypatch.setattr(notebooklm, "_DOWNLOAD_RETRY_INTERVAL", 0, raising=False)
 
 
+def _audio_create_cmd(fake):
+    return next(c for c in fake.calls if c[1:3] == ["audio", "create"])
+
+
+def _flag_value(cmd, name):
+    return cmd[cmd.index(name) + 1] if name in cmd else None
+
+
+def test_run_nlm_audio_create_uses_given_format_and_length(tmp_path, monkeypatch):
+    fake = FakeNlm()
+    _install_fake(monkeypatch, fake)
+
+    notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path / "o",
+                        audio_format="debate", audio_length="long", focus="")
+
+    cmd = _audio_create_cmd(fake)
+    assert _flag_value(cmd, "--format") == "debate"
+    assert _flag_value(cmd, "--length") == "long"
+    assert "--focus" not in cmd
+    assert cmd[-1] == "--confirm"
+
+
+def test_run_nlm_audio_create_includes_focus_when_set(tmp_path, monkeypatch):
+    fake = FakeNlm()
+    _install_fake(monkeypatch, fake)
+
+    notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path / "o",
+                        focus="methods and limitations")
+
+    cmd = _audio_create_cmd(fake)
+    assert _flag_value(cmd, "--focus") == "methods and limitations"
+
+
+def test_run_nlm_audio_create_defaults_match_cli(tmp_path, monkeypatch):
+    fake = FakeNlm()
+    _install_fake(monkeypatch, fake)
+
+    notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path / "o")
+
+    cmd = _audio_create_cmd(fake)
+    assert _flag_value(cmd, "--format") == "deep_dive"
+    assert _flag_value(cmd, "--length") == "default"
+    assert "--focus" not in cmd
+
+
 def test_run_nlm_happy_path_downloads_audio_and_cleans_up(tmp_path, monkeypatch):
     fake = FakeNlm(statuses=("completed",))
     _install_fake(monkeypatch, fake)

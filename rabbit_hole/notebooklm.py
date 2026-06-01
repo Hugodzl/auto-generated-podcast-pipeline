@@ -102,7 +102,9 @@ def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
     return False
 
 
-def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path) -> Path | None:
+def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
+             audio_format: str = "deep_dive", audio_length: str = "default",
+             focus: str = "") -> Path | None:
     """Generate an audio overview for one PDF via the nlm CLI.
 
     Multi-step: create a notebook, add the PDF as a source (waiting for ingest),
@@ -132,12 +134,12 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path) -> Path | None:
         if added is None or added.returncode != 0:
             return None
 
-        requested = _nlm(
-            nlm_command,
-            ["audio", "create", notebook_id,
-             "--format", "deep_dive", "--length", "default", "--confirm"],
-            _CALL_TIMEOUT,
-        )
+        audio_args = ["audio", "create", notebook_id,
+                      "--format", audio_format, "--length", audio_length]
+        if focus:
+            audio_args += ["--focus", focus]
+        audio_args.append("--confirm")
+        requested = _nlm(nlm_command, audio_args, _CALL_TIMEOUT)
         if requested is None or requested.returncode != 0:
             return None
 
