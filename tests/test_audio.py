@@ -131,3 +131,4 @@ def test_boost_folder_continues_past_a_failure(tmp_path, monkeypatch):
 
     assert boosted == ["good.m4a"]
     assert failed == [("bad.m4a", "boom")]
+    assert (backup / "bad.m4a").exists()   # backup written even for the failed file

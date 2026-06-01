@@ -77,7 +77,8 @@ def boost_loudness(path: str | Path, *, gain: float = 1.4, peak_ceiling_db: floa
         raise AudioBoostError(f"could not replace {path}: {e}") from e
 
 
-def boost_folder(target_dir, backup_dir, *, gain: float = 1.4):
+def boost_folder(target_dir: str | Path, backup_dir: str | Path, *,
+                 gain: float = 1.4) -> tuple[list[str], list[tuple[str, str]]]:
     """Back up and boost every .m4a in `target_dir`.
 
     Each file is copied to `backup_dir` (skipped if a backup already exists, so a
