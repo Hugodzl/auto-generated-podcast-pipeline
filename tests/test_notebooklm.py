@@ -151,6 +151,7 @@ def test_run_nlm_audio_create_includes_focus_when_set(tmp_path, monkeypatch):
 
     cmd = _audio_create_cmd(fake)
     assert _flag_value(cmd, "--focus") == "methods and limitations"
+    assert cmd[-1] == "--confirm"   # --confirm stays last even after --focus is appended
 
 
 def test_run_nlm_audio_create_defaults_match_cli(tmp_path, monkeypatch):
@@ -163,6 +164,7 @@ def test_run_nlm_audio_create_defaults_match_cli(tmp_path, monkeypatch):
     assert _flag_value(cmd, "--format") == "deep_dive"
     assert _flag_value(cmd, "--length") == "default"
     assert "--focus" not in cmd
+    assert cmd[-1] == "--confirm"
 
 
 def test_run_nlm_happy_path_downloads_audio_and_cleans_up(tmp_path, monkeypatch):
