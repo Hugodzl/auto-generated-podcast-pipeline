@@ -70,7 +70,11 @@ nlm login              # browser Google auth (interactive, one-time)
 2. **Add the PDF and wait for ingest:**
    `nlm source add <notebook_id> --file <pdf_path> --wait --wait-timeout <secs>`
 3. **Request the audio overview (async):**
-   `nlm audio create <notebook_id> --format deep_dive --length default --confirm`
+   `nlm audio create <notebook_id> --format <format> --length <length> [--focus <topic>] --confirm`
+   Format/length/focus come from the `[notebooklm]` config (defaults `deep_dive` /
+   `default` / no focus) and can be overridden per request, e.g.
+   `generate(paper, cfg.notebooklm, out, audio_length="long")`. `--focus` is omitted
+   when empty.
    (Omitting `--source-ids` uses all of the notebook's sources, i.e. just our PDF.
    `audio create` has no `--wait`, so it returns before the audio is ready.)
 4. **Poll until ready:** `nlm status artifacts <notebook_id> --json`, read the

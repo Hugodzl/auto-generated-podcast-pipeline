@@ -105,6 +105,10 @@ weight = 0.6
 
 [notebooklm]
 nlm_command = "nlm"
+# Audio Overview defaults. Overridable per request in code via generate(...).
+audio_format = "deep_dive"   # deep_dive | brief | critique | debate
+audio_length = "default"     # short | default | long  (default ~= 20-23 min; long is noticeably longer)
+focus = ""                   # optional topic steer for the hosts; empty = none
 
 [plex]
 base_url = "http://127.0.0.1:32400/"
