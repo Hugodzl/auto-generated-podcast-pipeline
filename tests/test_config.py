@@ -123,3 +123,20 @@ def test_invalid_audio_format_rejected(tmp_path):
     )
     with pytest.raises(ValueError):
         load_config(write_config(tmp_path, body))
+
+
+def test_audio_gain_defaults_to_1_4(tmp_path):
+    cfg = load_config(write_config(tmp_path, MINIMAL))
+    assert cfg.audio.gain_factor == 1.4
+
+
+def test_audio_gain_override_loaded(tmp_path):
+    body = MINIMAL + '    [audio]\n    gain_factor = 1.8\n'
+    cfg = load_config(write_config(tmp_path, body))
+    assert cfg.audio.gain_factor == 1.8
+
+
+def test_audio_gain_must_be_positive(tmp_path):
+    body = MINIMAL + '    [audio]\n    gain_factor = 0\n'
+    with pytest.raises(ValueError):
+        load_config(write_config(tmp_path, body))

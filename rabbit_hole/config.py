@@ -38,6 +38,10 @@ class NotebookLMConfig(BaseModel):
     focus: str = ""
 
 
+class AudioConfig(BaseModel):
+    gain_factor: float = Field(default=1.4, gt=0)   # 1.4 = +40% amplitude (~+2.9 dB)
+
+
 class PlexConfig(BaseModel):
     base_url: str
     library_name: str
@@ -58,6 +62,7 @@ class Config(BaseModel):
     topics: list[TopicConfig]
     sources: list[SourceConfig]
     notebooklm: NotebookLMConfig
+    audio: AudioConfig = Field(default_factory=AudioConfig)   # optional; absent [audio] -> 1.4
     plex: PlexConfig
     apis: ApisConfig
     notifications: NotificationsConfig
