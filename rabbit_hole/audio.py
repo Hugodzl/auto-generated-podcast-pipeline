@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -74,3 +75,26 @@ def boost_loudness(path: str | Path, *, gain: float = 1.4, peak_ceiling_db: floa
     except OSError as e:
         tmp.unlink(missing_ok=True)
         raise AudioBoostError(f"could not replace {path}: {e}") from e
+
+
+def boost_folder(target_dir, backup_dir, *, gain: float = 1.4):
+    """Back up and boost every .m4a in `target_dir`.
+
+    Each file is copied to `backup_dir` (skipped if a backup already exists, so a
+    re-run never clobbers the pristine original) and then boosted in place.
+    Continues past individual failures. Returns (boosted_names, failed) where
+    failed is a list of (name, error_message).
+    """
+    target_dir, backup_dir = Path(target_dir), Path(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    boosted, failed = [], []
+    for f in sorted(target_dir.glob("*.m4a")):
+        backup = backup_dir / f.name
+        if not backup.exists():
+            shutil.copy2(f, backup)
+        try:
+            boost_loudness(f, gain=gain)
+            boosted.append(f.name)
+        except AudioBoostError as e:
+            failed.append((f.name, str(e)))
+    return boosted, failed

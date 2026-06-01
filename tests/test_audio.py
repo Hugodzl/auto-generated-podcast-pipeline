@@ -79,3 +79,55 @@ def test_boost_bad_input_leaves_original_and_raises(tmp_path):
         boost_loudness(junk)
     assert junk.read_bytes() == b"not audio at all"        # original untouched
     assert not list(tmp_path.glob("*.tmp.m4a"))            # temp cleaned up
+
+
+def test_boost_folder_backs_up_once_and_boosts_each(tmp_path, monkeypatch):
+    import rabbit_hole.audio as audio
+    target = tmp_path / "lib"; target.mkdir()
+    (target / "a.m4a").write_bytes(b"a")
+    (target / "b.m4a").write_bytes(b"b")
+    (target / "cover.png").write_bytes(b"img")     # non-.m4a ignored
+    backup = tmp_path / "backup"
+    seen = []
+    monkeypatch.setattr(audio, "boost_loudness", lambda p, **k: seen.append(Path(p).name))
+
+    boosted, failed = audio.boost_folder(target, backup, gain=1.4)
+
+    assert sorted(boosted) == ["a.m4a", "b.m4a"]
+    assert failed == []
+    assert (backup / "a.m4a").read_bytes() == b"a"
+    assert (backup / "b.m4a").read_bytes() == b"b"
+    assert not (backup / "cover.png").exists()
+    assert sorted(seen) == ["a.m4a", "b.m4a"]
+
+
+def test_boost_folder_does_not_overwrite_existing_backup(tmp_path, monkeypatch):
+    import rabbit_hole.audio as audio
+    target = tmp_path / "lib"; target.mkdir()
+    (target / "a.m4a").write_bytes(b"new")
+    backup = tmp_path / "backup"; backup.mkdir()
+    (backup / "a.m4a").write_bytes(b"original-backup")    # pre-existing, must survive a re-run
+    monkeypatch.setattr(audio, "boost_loudness", lambda p, **k: None)
+
+    audio.boost_folder(target, backup, gain=1.4)
+
+    assert (backup / "a.m4a").read_bytes() == b"original-backup"
+
+
+def test_boost_folder_continues_past_a_failure(tmp_path, monkeypatch):
+    import rabbit_hole.audio as audio
+    target = tmp_path / "lib"; target.mkdir()
+    (target / "good.m4a").write_bytes(b"g")
+    (target / "bad.m4a").write_bytes(b"b")
+    backup = tmp_path / "backup"
+
+    def maybe(p, **k):
+        if Path(p).name == "bad.m4a":
+            raise audio.AudioBoostError("boom")
+
+    monkeypatch.setattr(audio, "boost_loudness", maybe)
+
+    boosted, failed = audio.boost_folder(target, backup, gain=1.4)
+
+    assert boosted == ["good.m4a"]
+    assert failed == [("bad.m4a", "boom")]
