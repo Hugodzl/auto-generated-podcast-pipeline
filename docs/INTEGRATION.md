@@ -85,6 +85,15 @@ nlm login              # browser Google auth (interactive, one-time)
 6. **Clean up:** `nlm notebook delete <notebook_id>` — each run creates a
    notebook, so delete it afterward (~260/year otherwise).
 
+**Loudness boost (post-download, before filing):** NLM `.m4a`s are quiet (~-28 dB
+mean), so `rabbit_hole.audio.boost_loudness` re-encodes each via ffmpeg
+(`volume=<gain_factor>` then an `alimiter` true-peak ceiling at -1 dBFS). `gain_factor`
+defaults to 1.4 (+40%) and is set in the `[audio]` config section. **ffmpeg + ffprobe
+must be on PATH — a runtime dependency.** Boost failures are logged but non-fatal (the
+episode is still filed). `scripts/boost_existing_episodes.py` applies the same boost to
+episodes already in the Plex folder, backing each up to `data/audio_backup_pre_boost/`
+first.
+
 Auth: `nlm login` (browser, one-time) caches a session in `~/.notebooklm-mcp-cli`
 that persists across shells (~2–4 wk before re-login). `nlm login --check`
 validates it — use it as the stale-session detector.

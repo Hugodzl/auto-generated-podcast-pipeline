@@ -110,6 +110,12 @@ audio_format = "deep_dive"   # deep_dive | brief | critique | debate
 audio_length = "default"     # short | default | long  (default ~= 20-23 min; long is noticeably longer)
 focus = ""                   # optional topic steer for the hosts; empty = none
 
+[audio]
+# Loudness boost applied to every generated episode before filing.
+# gain_factor = 1.4  ->  +40% amplitude (~+2.9 dB). A true-peak ceiling at
+# -1 dBFS is always applied so nothing clips. Requires ffmpeg/ffprobe on PATH.
+gain_factor = 1.4
+
 [plex]
 base_url = "http://127.0.0.1:32400/"
 library_name = "The Random Rabbit Hole"
