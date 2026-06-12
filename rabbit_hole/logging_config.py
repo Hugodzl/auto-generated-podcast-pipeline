@@ -1,4 +1,5 @@
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import httpx
@@ -23,7 +24,8 @@ def configure_logging(log_dir: Path, webhook_url: str | None) -> structlog.Bound
     # call keeps the JSON event stream in rabbit_hole.log. UTF-8 + ensure_ascii
     # =False so non-ASCII paper titles are written readably instead of crashing
     # on a cp1252 host.
-    handler = logging.FileHandler(log_dir / "rabbit_hole.log", encoding="utf-8")
+    handler = RotatingFileHandler(log_dir / "rabbit_hole.log", maxBytes=5_000_000,
+                                  backupCount=3, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(message)s"))
     root = logging.getLogger()
     for existing in list(root.handlers):
@@ -31,6 +33,10 @@ def configure_logging(log_dir: Path, webhook_url: str | None) -> structlog.Bound
         existing.close()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    # Third-party INFO chatter (httpx "HTTP Request: ..." etc.) drowns the
+    # structured events — keep only their warnings.
+    for noisy in ("httpx", "httpcore", "plexapi"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     structlog.configure(
         processors=[

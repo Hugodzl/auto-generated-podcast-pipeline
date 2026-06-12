@@ -50,3 +50,21 @@ def test_configure_logging_writes_json_events_to_utf8_file(tmp_path):
     content = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
     assert '"event": "filed"' in content
     assert "Café déjà vu ✓ 你好" in content
+
+
+import logging
+from logging.handlers import RotatingFileHandler
+
+from rabbit_hole.logging_config import configure_logging
+
+
+def test_configure_logging_silences_http_libs(tmp_path):
+    configure_logging(tmp_path, None)
+    for name in ("httpx", "httpcore", "plexapi"):
+        assert logging.getLogger(name).level == logging.WARNING
+
+
+def test_configure_logging_rotates(tmp_path):
+    configure_logging(tmp_path, None)
+    handlers = logging.getLogger().handlers
+    assert any(isinstance(h, RotatingFileHandler) for h in handlers)

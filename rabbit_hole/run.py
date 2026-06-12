@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 import keyring
@@ -134,6 +135,7 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
 
 
 def main() -> int:
+    started = time.monotonic()
     cfg = load_config(CONFIG_PATH)
     webhook = keyring.get_password(KEYRING_SERVICE, cfg.notifications.discord_webhook_keyring_key)
     logger = configure_logging(LOG_DIR, webhook)
@@ -157,6 +159,8 @@ def main() -> int:
                                  logger=logger, run_id=run_id)
             status = "ok" if count >= cfg.schedule.episodes_per_run else "partial"
             state.finish_run(run_id, status=status, error=None)
+            logger.info("run_complete", status=status, episodes=count,
+                        elapsed_s=round(time.monotonic() - started))
             return 0
         except Exception as e:  # noqa: BLE001 - top-level guard
             logger.error("run_failed", error=str(e))
