@@ -90,15 +90,26 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
             # consecutive-failure budget is untouched. Advance to the next candidate.
             logger.info("resolve_skipped", title=s.item.title)
             continue
+        pending_id = state.add_pending(
+            run_id=run_id, doi=paper.doi, title=paper.title, summary=paper.abstract,
+            link=paper.source.link, source_name=paper.source.source_name,
+            source_weight=paper.source.source_weight,
+            published_at=paper.published_at.isoformat(), pdf_path=str(paper.pdf_path),
+            language=paper.language, topic_bucket=s.topic_bucket, score=s.score,
+        )
         try:
             ep = generate(paper, cfg.notebooklm, out_dir=audio_dir)
         except NotebookLMError as e:
+            # A clean nlm failure already deleted its notebook (finally block in
+            # _run_nlm) — the snapshot would only confuse recovery. Drop it.
+            state.delete_pending(pending_id)
             failures += 1
             logger.error("nlm_failed", title=paper.title, error=str(e))
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 raise
             continue
         _publish(ep, s.topic_bucket, s.score, cfg, state, token, logger, run_id=run_id)
+        state.delete_pending(pending_id)
         generated += 1
         if run_id is not None:
             state.set_run_episodes(run_id, generated)

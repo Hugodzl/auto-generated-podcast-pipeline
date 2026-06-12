@@ -319,3 +319,46 @@ def test_startup_recovery_quiet_when_nothing_stale(tmp_path, monkeypatch):
                         lambda url, msg: posts.append(msg))
     _startup_recovery(st, "http://hook", _NullLog())
     assert posts == []
+
+
+def test_pending_row_covers_the_generate_window(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config()
+    item = _item("Whale song", "http://x/10.1234/whale")
+    paper = _paper_for(item, doi="10.1234/whale")
+    during_generate = []
+
+    def fake_generate(p, *a, **k):
+        during_generate.extend(st.list_pending())   # row exists while we generate
+        return _ep(p, tmp_path)
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
+    monkeypatch.setattr("rabbit_hole.run.generate", fake_generate)
+    monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert len(during_generate) == 1
+    assert during_generate[0]["title"] == "Whale song"
+    assert during_generate[0]["topic_bucket"] == "Animals"
+    assert st.list_pending() == []                  # cleared after publish
+
+
+def test_pending_row_cleared_when_generate_fails(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config()
+    item = _item("Whale song", "http://x/10.1234/whale")
+    paper = _paper_for(item, doi="10.1234/whale")
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
+    monkeypatch.setattr("rabbit_hole.run.generate",
+                        lambda *a, **k: (_ for _ in ()).throw(NotebookLMError("boom")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 0
+    assert st.list_pending() == []   # a clean failure is not an orphan

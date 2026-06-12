@@ -117,3 +117,22 @@ def test_migrations_apply_once(tmp_db, migrations_dir):
     assert applied == len(list(migrations_dir.glob("*.sql")))
     st.init()  # second init: idempotent, re-applies nothing, raises nothing
     assert st.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == applied
+
+
+def test_pending_generation_roundtrip(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    pid = st.add_pending(
+        run_id=1, doi=None, title="T", summary="whale", link="http://x/1",
+        source_name="Nature", source_weight=1.0,
+        published_at="2026-06-10T03:05:42+00:00", pdf_path="data/pdfs/abc.pdf",
+        language="en", topic_bucket="Animals", score=1.5,
+    )
+    rows = st.list_pending()
+    assert len(rows) == 1
+    assert rows[0]["id"] == pid
+    assert rows[0]["title"] == "T"
+    assert rows[0]["pdf_path"] == "data/pdfs/abc.pdf"
+    assert rows[0]["score"] == 1.5
+    st.delete_pending(pid)
+    assert st.list_pending() == []

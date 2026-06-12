@@ -114,6 +114,35 @@ class State:
         )
         return [f"{bucket} - {title}" for bucket, title in cur.fetchall()]
 
+    # --- pending generations (crash recovery) ---
+    _PENDING_COLS = ("id", "run_id", "doi", "title", "summary", "link",
+                     "source_name", "source_weight", "published_at", "pdf_path",
+                     "language", "topic_bucket", "score", "created_at")
+
+    def add_pending(self, *, run_id, doi, title, summary, link, source_name,
+                    source_weight, published_at, pdf_path, language,
+                    topic_bucket, score) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO pending_generations (run_id, doi, title, summary, link, "
+            "source_name, source_weight, published_at, pdf_path, language, "
+            "topic_bucket, score, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, doi, title, summary, link, source_name, source_weight,
+             published_at, pdf_path, language, topic_bucket, score,
+             datetime.utcnow().isoformat()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_pending(self) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT " + ", ".join(self._PENDING_COLS) + " FROM pending_generations ORDER BY id"
+        )
+        return [dict(zip(self._PENDING_COLS, row)) for row in cur.fetchall()]
+
+    def delete_pending(self, pending_id: int) -> None:
+        self.conn.execute("DELETE FROM pending_generations WHERE id=?", (pending_id,))
+        self.conn.commit()
+
     # --- api cache ---
     def cache_get(self, api: str, query_hash: str, ttl_days: float) -> dict | None:
         cur = self.conn.execute(
