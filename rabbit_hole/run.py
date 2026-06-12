@@ -6,7 +6,7 @@ import keyring
 from rabbit_hole.config import Config, load_config
 from rabbit_hole.logging_config import configure_logging, post_discord
 from rabbit_hole.audio import AudioBoostError, boost_loudness
-from rabbit_hole.notebooklm import NotebookLMError, generate
+from rabbit_hole.notebooklm import GeneratedEpisode, NotebookLMError, generate
 from rabbit_hole.plex import file_episode
 from rabbit_hole.ranker import rank
 from rabbit_hole.resolver import resolve, extract_doi
@@ -27,10 +27,14 @@ def _plex_token(cfg: Config) -> str:
     return keyring.get_password(KEYRING_SERVICE, "plex_token") or ""
 
 
-def _publish(ep, topic_bucket: str, score: float, cfg: Config, state: State,
-             token: str, logger, run_id: int | None = None) -> None:
+def _publish(ep: GeneratedEpisode, topic_bucket: str, score: float, cfg: Config,
+             state: State, token: str, logger, run_id: int | None = None) -> None:
     """Post-generation steps shared by the normal walk and orphan recovery:
-    boost (fail-soft) -> file to Plex -> record in state."""
+    boost (fail-soft) -> file to Plex -> record in state.
+
+    A boost failure files the (quiet) episode rather than dropping it, and is
+    deliberately NOT counted against the caller's consecutive-nlm-failure
+    budget — it's post-generation."""
     try:
         boost_loudness(ep.audio_path, gain=cfg.audio.gain_factor)
     except AudioBoostError as e:
