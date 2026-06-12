@@ -148,6 +148,8 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
             return None
         _log.info("nlm_source_added", notebook_id=notebook_id)
 
+        # --language is passed explicitly on purpose: it overrides the account /
+        # NOTEBOOKLM_HL default so output language follows the paper, not the env.
         audio_args = ["audio", "create", notebook_id,
                       "--format", audio_format, "--length", audio_length,
                       "--language", language]

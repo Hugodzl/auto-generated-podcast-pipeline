@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 import keyring
-from langdetect import LangDetectException, detect
+from langdetect import DetectorFactory, LangDetectException, detect
 
 from rabbit_hole.config import ApisConfig
 from rabbit_hole.sources import FeedItem
@@ -24,6 +24,9 @@ ARXIV_RE = re.compile(
 )
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*]')
 USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
+# langdetect's EM algorithm is randomized; seed it so the same title+summary
+# always yields the same language (it now drives NLM's --language choice).
+DetectorFactory.seed = 0
 
 KEYRING_SERVICE = "rabbit_hole"
 # Polite throttle, keyed by API (a cold run can fire >1000 lookups). Every

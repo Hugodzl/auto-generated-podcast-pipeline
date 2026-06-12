@@ -813,3 +813,9 @@ def test_resolve_with_doi_but_no_pdf_returns_none(tmp_db, migrations_dir, tmp_pa
     # — the gate must fire first and return None.
     result = resolve(item, ApisConfig(unpaywall_email="e@x.com"), st, pdf_dir=tmp_path)
     assert result is None
+
+
+def test_detect_language_falls_back_to_en_on_undetectable_text():
+    # Symbol-only text raises LangDetectException internally -> "en" fallback,
+    # which downstream becomes NLM's --language en.
+    assert detect_language("42 :: ???") == "en"
