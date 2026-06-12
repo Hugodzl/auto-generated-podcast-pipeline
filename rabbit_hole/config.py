@@ -12,6 +12,7 @@ class ScheduleConfig(BaseModel):
 
 class RankingConfig(BaseModel):
     recency_half_life_days: float = Field(gt=0)
+    topic_round_robin: bool = True   # cycle topics when filling episode slots
 
     def ranking_half_life(self) -> float:
         return self.recency_half_life_days

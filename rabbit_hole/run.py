@@ -10,7 +10,7 @@ from rabbit_hole.logging_config import configure_logging, post_discord
 from rabbit_hole.audio import AudioBoostError, boost_loudness
 from rabbit_hole.notebooklm import GeneratedEpisode, NotebookLMError, generate
 from rabbit_hole.plex import file_episode
-from rabbit_hole.ranker import rank
+from rabbit_hole.ranker import interleave_topics, rank
 from rabbit_hole.recovery import recover_orphans
 from rabbit_hole.resolver import resolve, extract_doi
 from rabbit_hole.sources import poll_all
@@ -100,6 +100,8 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
     # 3. rank the raw items (no PDFs yet); rank returns the full score>0 list, sorted desc.
     ranked = rank(items, cfg.topics, cfg.ranking)
     logger.info("ranked", count=len(ranked))
+    if cfg.ranking.topic_round_robin:
+        ranked = interleave_topics(ranked)
 
     # 4. walk the ranked list: resolve lazily, generate + file, stop once enough episodes exist.
     failures = 0

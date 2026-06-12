@@ -4,6 +4,7 @@ episodes_per_run = 5
 
 [ranking]
 recency_half_life_days = 30
+topic_round_robin = true   # cycle topics when filling episode slots (diversity)
 
 [[topics]]
 name = "AI studies"

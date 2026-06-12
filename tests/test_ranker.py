@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from rabbit_hole.config import RankingConfig, TopicConfig
-from rabbit_hole.ranker import ScoredItem, keyword_hits, rank, recency_decay, score_item
+from rabbit_hole.ranker import ScoredItem, interleave_topics, keyword_hits, rank, recency_decay, score_item
 from rabbit_hole.sources import FeedItem
 
 TOPICS = [
@@ -58,3 +58,27 @@ def test_rank_drops_zero_score_items():
     irrelevant = make_item("Cooking pasta", "recipes and food", days_old=1)
     ranked = rank([irrelevant], TOPICS, cfg)
     assert ranked == []
+
+
+def _scored(topic, score):
+    return ScoredItem(item=None, score=score, topic_bucket=topic)
+
+
+def test_interleave_cycles_topics():
+    ranked = [_scored("AI", 2.0), _scored("AI", 1.9), _scored("AI", 1.8),
+              _scored("Animals", 1.0), _scored("Psych", 0.5)]
+    out = interleave_topics(ranked)
+    assert [(s.topic_bucket, s.score) for s in out] == [
+        ("AI", 2.0), ("Animals", 1.0), ("Psych", 0.5),   # cycle 1: each topic's best
+        ("AI", 1.9),                                      # cycle 2
+        ("AI", 1.8),                                      # cycle 3
+    ]
+
+
+def test_interleave_single_topic_is_identity():
+    ranked = [_scored("AI", 2.0), _scored("AI", 1.0)]
+    assert interleave_topics(ranked) == ranked
+
+
+def test_interleave_empty():
+    assert interleave_topics([]) == []

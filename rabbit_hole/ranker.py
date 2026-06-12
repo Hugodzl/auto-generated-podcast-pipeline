@@ -48,3 +48,26 @@ def rank(items: list[FeedItem], topics: list[TopicConfig], cfg: RankingConfig) -
     scored = [s for s in scored if s.score > 0]
     scored.sort(key=lambda s: s.score, reverse=True)
     return scored
+
+
+def interleave_topics(ranked: list[ScoredItem]) -> list[ScoredItem]:
+    """Reorder a score-desc list so consumption cycles topics round-robin.
+
+    Cycle 1 holds every topic's best item, cycle 2 the second-bests, and so on;
+    a topic with an exhausted pool drops out of later cycles. Within a cycle,
+    items keep score-desc order, so the strongest topic leads each round without
+    monopolizing the run. The orchestrator's resolve-failure fallthrough then
+    lands on the NEXT TOPIC's best candidate instead of more of the same topic.
+    """
+    pools: dict[str, list[ScoredItem]] = {}
+    for s in ranked:
+        pools.setdefault(s.topic_bucket, []).append(s)
+    out: list[ScoredItem] = []
+    depth = 0
+    while True:
+        cycle = sorted((pool[depth] for pool in pools.values() if depth < len(pool)),
+                       key=lambda s: s.score, reverse=True)
+        if not cycle:
+            return out
+        out.extend(cycle)
+        depth += 1

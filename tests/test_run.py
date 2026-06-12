@@ -390,6 +390,42 @@ def test_run_summary_handles_empty_run(tmp_path):
     assert "(none)" in msg
 
 
+def test_run_pipeline_round_robins_topics(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = Config.model_validate({
+        "schedule": {"cron": "0 7 * * MON", "episodes_per_run": 2},
+        "ranking": {"recency_half_life_days": 30},
+        "topics": [{"name": "Animals", "weight": 1.0, "keywords": ["whale"]},
+                   {"name": "AI studies", "weight": 1.0, "keywords": ["neural"]}],
+        "sources": [{"name": "Nature", "type": "rss", "url": "http://x", "weight": 1.0}],
+        "notebooklm": {"nlm_command": "nlm"},
+        "plex": {"base_url": "http://127.0.0.1:32400/", "library_name": "L",
+                 "target_folder": "ignored"},
+        "apis": {"unpaywall_email": "e@x.com"},
+        "notifications": {"discord_webhook_keyring_key": "k"},
+    })
+    # Two whale items (fresher = higher score) + one neural item scoring lowest.
+    whale1 = _item("Whale one", "http://x/w1", days_old=1)
+    whale2 = _item("Whale two", "http://x/w2", days_old=2)
+    neural = _item("Neural nets", "http://x/n1", summary="neural", days_old=30)
+    by_link = {it.link: _paper_for(it) for it in (whale1, whale2, neural)}
+    filed = []
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all",
+                        lambda c, s, **k: iter([whale1, whale2, neural]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
+    monkeypatch.setattr("rabbit_hole.run.file_episode",
+                        lambda e, b, p, t: (filed.append(e.paper.title) or (tmp_path / "f.m4a")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 2
+    # without interleave both slots would be whales; round-robin gives one each
+    assert filed == ["Whale one", "Neural nets"]
+
+
 def test_run_pipeline_adopts_orphans_before_polling(tmp_path, monkeypatch):
     from rabbit_hole.recovery import RecoveredEpisode
     st = State(tmp_path / "state.db", MIGRATIONS)

@@ -140,3 +140,10 @@ def test_audio_gain_must_be_positive(tmp_path):
     body = MINIMAL + '    [audio]\n    gain_factor = 0\n'
     with pytest.raises(ValueError):
         load_config(write_config(tmp_path, body))
+
+
+def test_ranking_topic_round_robin_defaults_true(tmp_path):
+    from rabbit_hole.config import RankingConfig
+    assert RankingConfig(recency_half_life_days=30).topic_round_robin is True
+    assert RankingConfig(recency_half_life_days=30,
+                         topic_round_robin=False).topic_round_robin is False
