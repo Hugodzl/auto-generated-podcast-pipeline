@@ -169,9 +169,13 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         return None
     finally:
         if notebook_id:
-            _nlm(nlm_command, ["notebook", "delete", notebook_id, "--confirm"],
-                 _CALL_TIMEOUT)
-            _log.info("nlm_notebook_deleted", notebook_id=notebook_id)
+            deleted = _nlm(nlm_command, ["notebook", "delete", notebook_id, "--confirm"],
+                           _CALL_TIMEOUT)
+            if deleted is not None and deleted.returncode == 0:
+                _log.info("nlm_notebook_deleted", notebook_id=notebook_id)
+            else:
+                # The orphan sweep at next startup will adopt-or-delete it.
+                _log.warning("nlm_notebook_delete_failed", notebook_id=notebook_id)
 
 
 def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,

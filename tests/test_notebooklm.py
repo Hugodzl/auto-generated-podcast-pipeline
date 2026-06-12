@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from structlog.testing import capture_logs
 
 from rabbit_hole import notebooklm
 from rabbit_hole.config import NotebookLMConfig
@@ -316,7 +317,6 @@ def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
 # Heartbeat / structured-event tests
 # ---------------------------------------------------------------------------
 
-from structlog.testing import capture_logs  # noqa: E402
 
 
 def _fake_nlm_heartbeat(cmd, args, timeout):
