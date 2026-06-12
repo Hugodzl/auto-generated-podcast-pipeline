@@ -4,6 +4,7 @@ from pathlib import Path
 import keyring
 
 from rabbit_hole.config import Config, load_config
+from rabbit_hole.lockfile import PipelineLockError, acquire_lock
 from rabbit_hole.logging_config import configure_logging, post_discord
 from rabbit_hole.audio import AudioBoostError, boost_loudness
 from rabbit_hole.notebooklm import GeneratedEpisode, NotebookLMError, generate
@@ -109,22 +110,30 @@ def main() -> int:
     cfg = load_config(CONFIG_PATH)
     webhook = keyring.get_password(KEYRING_SERVICE, cfg.notifications.discord_webhook_keyring_key)
     logger = configure_logging(LOG_DIR, webhook)
-    state = State(DATA_DIR / "state.db", MIGRATIONS)
-    state.init()
-    _startup_recovery(state, webhook, logger)
-    run_id = state.start_run()
     try:
-        count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR,
-                             logger=logger, run_id=run_id)
-        status = "ok" if count >= cfg.schedule.episodes_per_run else "partial"
-        state.finish_run(run_id, status=status, error=None)
+        lock = acquire_lock(DATA_DIR / "run.lock")
+    except PipelineLockError:
+        logger.warning("run_already_in_progress")
         return 0
-    except Exception as e:  # noqa: BLE001 - top-level guard
-        logger.error("run_failed", error=str(e))
-        if webhook:
-            post_discord(webhook, f"Rabbit Hole run failed: {e}")
-        state.finish_run(run_id, status="failed", error=str(e))
-        return 1
+    try:
+        state = State(DATA_DIR / "state.db", MIGRATIONS)
+        state.init()
+        _startup_recovery(state, webhook, logger)
+        run_id = state.start_run()
+        try:
+            count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR,
+                                 logger=logger, run_id=run_id)
+            status = "ok" if count >= cfg.schedule.episodes_per_run else "partial"
+            state.finish_run(run_id, status=status, error=None)
+            return 0
+        except Exception as e:  # noqa: BLE001 - top-level guard
+            logger.error("run_failed", error=str(e))
+            if webhook:
+                post_discord(webhook, f"Rabbit Hole run failed: {e}")
+            state.finish_run(run_id, status="failed", error=str(e))
+            return 1
+    finally:
+        lock.close()
 
 
 if __name__ == "__main__":
