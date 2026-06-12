@@ -27,7 +27,27 @@ def _plex_token(cfg: Config) -> str:
     return keyring.get_password(KEYRING_SERVICE, "plex_token") or ""
 
 
-def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path, logger) -> int:
+def _publish(ep, topic_bucket: str, score: float, cfg: Config, state: State,
+             token: str, logger, run_id: int | None = None) -> None:
+    """Post-generation steps shared by the normal walk and orphan recovery:
+    boost (fail-soft) -> file to Plex -> record in state."""
+    try:
+        boost_loudness(ep.audio_path, gain=cfg.audio.gain_factor)
+    except AudioBoostError as e:
+        logger.error("audio_boost_failed", title=ep.paper.title, error=str(e))
+    dest = file_episode(ep, topic_bucket, cfg.plex, token)
+    paper = ep.paper
+    state.record_episode(
+        doi=paper.doi, title_hash=hash_str(paper.title), title=paper.title,
+        language=paper.language, source_name=paper.source.source_name,
+        topic_bucket=topic_bucket, score=score,
+        pdf_path=str(paper.pdf_path), audio_path=str(dest), run_id=run_id,
+    )
+    logger.info("filed", title=paper.title, path=str(dest))
+
+
+def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
+                 logger, run_id: int | None = None) -> int:
     # 1. ingest
     items = list(poll_all(cfg, state))
     logger.info("ingested", count=len(items))
@@ -64,21 +84,10 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path, logg
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 raise
             continue
-        try:
-            boost_loudness(ep.audio_path, gain=cfg.audio.gain_factor)
-        except AudioBoostError as e:
-            # Non-fatal: file the (quiet) episode rather than drop it. Not counted
-            # against the consecutive-nlm-failure budget — it's post-generation.
-            logger.error("audio_boost_failed", title=paper.title, error=str(e))
-        dest = file_episode(ep, s.topic_bucket, cfg.plex, token)
-        state.record_episode(
-            doi=paper.doi, title_hash=hash_str(paper.title), title=paper.title,
-            language=paper.language, source_name=paper.source.source_name,
-            topic_bucket=s.topic_bucket, score=s.score,
-            pdf_path=str(paper.pdf_path), audio_path=str(dest),
-        )
+        _publish(ep, s.topic_bucket, s.score, cfg, state, token, logger, run_id=run_id)
         generated += 1
-        logger.info("filed", title=paper.title, path=str(dest))
+        if run_id is not None:
+            state.set_run_episodes(run_id, generated)
         failures = 0  # reset: budget is CONSECUTIVE nlm failures
     return generated
 
@@ -91,9 +100,10 @@ def main() -> int:
     state.init()
     run_id = state.start_run()
     try:
-        count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR, logger=logger)
-        state.set_run_episodes(run_id, count)
-        state.finish_run(run_id, status="ok" if count else "partial", error=None)
+        count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR,
+                             logger=logger, run_id=run_id)
+        status = "ok" if count >= cfg.schedule.episodes_per_run else "partial"
+        state.finish_run(run_id, status=status, error=None)
         return 0
     except Exception as e:  # noqa: BLE001 - top-level guard
         logger.error("run_failed", error=str(e))

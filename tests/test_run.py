@@ -260,3 +260,38 @@ def test_run_pipeline_files_even_when_boost_fails(tmp_path, monkeypatch):
     count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
     assert count == 1            # fail-soft: episode still filed despite boost failure
     assert len(filed) == 1
+
+
+def test_run_pipeline_updates_run_row_incrementally(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    run_id = st.start_run()
+    cfg = _config(episodes_per_run=2)
+    items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(2)]
+    by_link = {it.link: _paper_for(it) for it in items}
+    counts_seen = []
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
+    monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
+    monkeypatch.setattr(
+        "rabbit_hole.run.file_episode",
+        lambda e, b, p, t: (
+            counts_seen.append(
+                st.conn.execute("SELECT episodes_generated FROM runs WHERE id=?",
+                                (run_id,)).fetchone()[0]
+            ) or (tmp_path / "f.m4a")
+        ),
+    )
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path,
+                         logger=_NullLog(), run_id=run_id)
+    assert count == 2
+    # while filing episode 1 the row was still 0/None; while filing episode 2 it was 1
+    assert counts_seen[1] == 1
+    assert st.conn.execute("SELECT episodes_generated FROM runs WHERE id=?",
+                           (run_id,)).fetchone()[0] == 2
+    # episodes are linked to the run
+    assert st.episode_titles_for_run(run_id) == [
+        "Animals - Whale paper 0", "Animals - Whale paper 1"]
