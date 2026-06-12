@@ -21,6 +21,9 @@ from rabbit_hole.resolver import Paper
 from rabbit_hole.sources import FeedItem
 from rabbit_hole.state import State
 
+# The prefix is a pipeline-owned namespace: every notebook named "rabbit-hole …"
+# is presumed created by _run_nlm and is fair game for deletion here. Don't
+# hand-create notebooks with this prefix.
 _PREFIX = "rabbit-hole "
 
 

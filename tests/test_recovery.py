@@ -82,3 +82,34 @@ def test_incomplete_artifact_is_dropped(tmp_path, monkeypatch):
     assert got == []
     assert ["notebook", "delete", "nb1", "--confirm"] in deleted
     assert st.list_pending() == []   # candidate is gone; logged as unrecoverable
+
+
+def test_download_failure_keeps_notebook_and_snapshot(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    _pending(st)
+    deleted = []
+    monkeypatch.setattr(recovery, "_nlm_json", lambda cmd, args, t:
+        [{"id": "nb1", "title": "rabbit-hole c439 deadbeef"}]
+        if args[:2] == ["list", "notebooks"]
+        else [{"type": "audio", "status": "completed", "id": "a1"}])
+    monkeypatch.setattr(recovery, "_nlm",
+                        lambda cmd, args, t: deleted.append(args))
+    monkeypatch.setattr(recovery, "_download_audio",
+                        lambda cmd, nb, art, out: False)   # download never succeeds
+
+    got = recovery.recover_orphans("nlm", st, tmp_path, _NullLog())
+    assert got == []
+    assert deleted == []                 # notebook kept for retry next run
+    assert len(st.list_pending()) == 1   # snapshot kept too
+
+
+def test_unreachable_nlm_changes_nothing(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    _pending(st)
+    monkeypatch.setattr(recovery, "_nlm_json", lambda cmd, args, t: None)  # nlm down
+
+    got = recovery.recover_orphans("nlm", st, tmp_path, _NullLog())
+    assert got == []
+    assert len(st.list_pending()) == 1   # nothing purged while nlm is unreachable
