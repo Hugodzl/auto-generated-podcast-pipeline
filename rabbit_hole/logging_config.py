@@ -24,6 +24,9 @@ def configure_logging(log_dir: Path, webhook_url: str | None) -> structlog.Bound
     # call keeps the JSON event stream in rabbit_hole.log. UTF-8 + ensure_ascii
     # =False so non-ASCII paper titles are written readably instead of crashing
     # on a cp1252 host.
+    # Rotation is a safety net: with third-party noise silenced a weekly run
+    # writes only a few KB, so 5 MB fires rarely — it exists to cap the file if
+    # something ever gets chatty again.
     handler = RotatingFileHandler(log_dir / "rabbit_hole.log", maxBytes=5_000_000,
                                   backupCount=3, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(message)s"))
