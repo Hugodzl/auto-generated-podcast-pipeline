@@ -80,7 +80,7 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
         return generated
 
     # 1. ingest
-    items = list(poll_all(cfg, state))
+    items = list(poll_all(cfg, state, logger=logger))
     logger.info("ingested", count=len(items))
 
     # 2. drop already-published items BEFORE resolving (metadata only, no PDF needed).

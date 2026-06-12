@@ -4,7 +4,7 @@ import respx
 import httpx
 
 from rabbit_hole.config import SourceConfig
-from rabbit_hole.sources import FeedItem, parse_feed, poll_source
+from rabbit_hole.sources import FeedItem, parse_feed, poll_source, poll_all
 from rabbit_hole.state import State
 
 SAMPLE_RSS = """<?xml version="1.0"?>
@@ -52,3 +52,52 @@ def test_poll_source_disabled_skipped(tmp_db, migrations_dir):
     st.init()
     src = SourceConfig(name="Nature", type="rss", url="http://x/feed", weight=1.0, enabled=False)
     assert list(poll_source(src, st)) == []
+
+
+class _SpyLog:
+    def __init__(self):
+        self.events = []
+    def info(self, event, **kw):
+        self.events.append((event, kw))
+    def warning(self, event, **kw):
+        self.events.append((event, kw))
+    def error(self, event, **kw):
+        self.events.append((event, kw))
+
+
+def test_poll_all_logs_failures_and_counts(tmp_path, monkeypatch):
+    from pathlib import Path
+    from rabbit_hole.config import Config
+    from rabbit_hole.state import State
+    migrations = Path(__file__).parent.parent / "migrations"
+    st = State(tmp_path / "state.db", migrations)
+    st.init()
+    cfg = Config.model_validate({
+        "schedule": {"cron": "0 7 * * MON", "episodes_per_run": 1},
+        "ranking": {"recency_half_life_days": 30},
+        "topics": [{"name": "T", "weight": 1.0, "keywords": ["k"]}],
+        "sources": [
+            {"name": "Dead", "type": "rss", "url": "http://dead", "weight": 1.0},
+            {"name": "Alive", "type": "rss", "url": "http://alive", "weight": 1.0},
+        ],
+        "notebooklm": {"nlm_command": "nlm"},
+        "plex": {"base_url": "http://127.0.0.1:32400/", "library_name": "L",
+                 "target_folder": "ignored"},
+        "apis": {"unpaywall_email": "e@x.com"},
+        "notifications": {"discord_webhook_keyring_key": "k"},
+    })
+
+    def fake_poll_source(source, state):
+        if source.name == "Dead":
+            raise httpx.ConnectError("nope")
+        yield from []   # alive but quiet
+
+    monkeypatch.setattr("rabbit_hole.sources.poll_source", fake_poll_source)
+    log = _SpyLog()
+    list(poll_all(cfg, st, logger=log))
+
+    events = dict(log.events)
+    assert "source_poll_failed" in events and events["source_poll_failed"]["source"] == "Dead"
+    assert ("source_polled", {"source": "Alive", "new_items": 0}) in log.events
+    assert st.bump_source_failure("Dead", "x") == 2   # poll already counted 1
+    assert st.failing_sources(threshold=1) == [("Dead", 2)]

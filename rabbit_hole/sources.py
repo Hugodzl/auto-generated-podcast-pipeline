@@ -76,9 +76,19 @@ def poll_source(source: SourceConfig, state: State) -> Iterator[FeedItem]:
         yield item
 
 
-def poll_all(config: Config, state: State) -> Iterator[FeedItem]:
+def poll_all(config: Config, state: State, logger=None) -> Iterator[FeedItem]:
     for source in config.sources:
+        new_items = 0
         try:
-            yield from poll_source(source, state)
-        except httpx.HTTPError:
-            continue  # one bad feed shouldn't kill the run; logged by caller
+            for item in poll_source(source, state):
+                new_items += 1
+                yield item
+        except httpx.HTTPError as e:
+            failures = state.bump_source_failure(source.name, str(e))
+            if logger:
+                logger.warning("source_poll_failed", source=source.name,
+                               error=str(e), consecutive_failures=failures)
+            continue  # one bad feed shouldn't kill the run
+        state.reset_source_failures(source.name)
+        if logger:
+            logger.info("source_polled", source=source.name, new_items=new_items)

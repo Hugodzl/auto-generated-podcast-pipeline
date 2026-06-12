@@ -143,6 +143,36 @@ class State:
         self.conn.execute("DELETE FROM pending_generations WHERE id=?", (pending_id,))
         self.conn.commit()
 
+    # --- source health ---
+    def bump_source_failure(self, source_name: str, error: str) -> int:
+        self.conn.execute(
+            "INSERT INTO source_health (source_name, consecutive_failures, "
+            "last_failure_at, last_error) VALUES (?,1,?,?) "
+            "ON CONFLICT(source_name) DO UPDATE SET "
+            "consecutive_failures=consecutive_failures+1, "
+            "last_failure_at=excluded.last_failure_at, last_error=excluded.last_error",
+            (source_name, datetime.utcnow().isoformat(), error),
+        )
+        self.conn.commit()
+        return self.conn.execute(
+            "SELECT consecutive_failures FROM source_health WHERE source_name=?",
+            (source_name,),
+        ).fetchone()[0]
+
+    def reset_source_failures(self, source_name: str) -> None:
+        self.conn.execute(
+            "UPDATE source_health SET consecutive_failures=0 WHERE source_name=?",
+            (source_name,),
+        )
+        self.conn.commit()
+
+    def failing_sources(self, threshold: int = 3) -> list[tuple[str, int]]:
+        cur = self.conn.execute(
+            "SELECT source_name, consecutive_failures FROM source_health "
+            "WHERE consecutive_failures>=? ORDER BY source_name", (threshold,),
+        )
+        return [(name, n) for name, n in cur.fetchall()]
+
     # --- api cache ---
     def cache_get(self, api: str, query_hash: str, ttl_days: float) -> dict | None:
         cur = self.conn.execute(

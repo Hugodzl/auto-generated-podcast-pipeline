@@ -136,3 +136,14 @@ def test_pending_generation_roundtrip(tmp_db, migrations_dir):
     assert rows[0]["score"] == 1.5
     st.delete_pending(pid)
     assert st.list_pending() == []
+
+
+def test_source_health_counters(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    assert st.bump_source_failure("Nature", "boom") == 1
+    assert st.bump_source_failure("Nature", "boom again") == 2
+    assert st.bump_source_failure("Nature", "boom 3") == 3
+    assert st.failing_sources(threshold=3) == [("Nature", 3)]
+    st.reset_source_failures("Nature")
+    assert st.failing_sources(threshold=1) == []

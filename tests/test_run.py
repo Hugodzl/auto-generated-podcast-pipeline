@@ -65,7 +65,7 @@ def test_run_pipeline_files_episode(tmp_path, monkeypatch):
     item = _item("Whale song", "http://x/10.1234/whale")
     paper = _paper_for(item, doi="10.1234/whale")
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
     monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: _ep(paper, tmp_path))
     filed = []
@@ -96,7 +96,7 @@ def test_run_pipeline_skips_already_published_before_resolving(tmp_path, monkeyp
     def _no_generate(*a, **k):
         raise AssertionError("generate must not run for an already-published item")
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", _no_resolve)
     monkeypatch.setattr("rabbit_hole.run.generate", _no_generate)
     monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
@@ -112,7 +112,7 @@ def test_run_pipeline_aborts_after_5_consecutive_failures(tmp_path, monkeypatch)
     items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(5)]
     by_link = {it.link: _paper_for(it) for it in items}
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter(items))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
     monkeypatch.setattr("rabbit_hole.run.generate",
                         lambda *a, **k: (_ for _ in ()).throw(NotebookLMError("boom")))
@@ -138,7 +138,7 @@ def test_run_pipeline_does_not_abort_on_nonconsecutive_failures(tmp_path, monkey
             return _ep(paper, tmp_path)
         raise NotebookLMError("boom")
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter(items))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
     monkeypatch.setattr("rabbit_hole.run.generate", fake_generate)
     monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
@@ -161,7 +161,7 @@ def test_run_pipeline_resolves_lazily_until_target_met(tmp_path, monkeypatch):
         resolve_calls.append(item.link)
         return by_link[item.link]
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter(items))
     monkeypatch.setattr("rabbit_hole.run.resolve", fake_resolve)
     monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
     monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
@@ -181,7 +181,7 @@ def test_run_pipeline_skips_resolve_misses_without_aborting(tmp_path, monkeypatc
     items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(8)]
     papers = {it.link: (None if i < 6 else _paper_for(it)) for i, it in enumerate(items)}
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter(items))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: papers[item.link])
     monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
     monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
@@ -201,7 +201,7 @@ def test_run_pipeline_files_in_descending_score_order(tmp_path, monkeypatch):
     by_link = {fresh.link: _paper_for(fresh), stale.link: _paper_for(stale)}
 
     # poll yields stale first to prove ordering comes from rank, not poll order
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([stale, fresh]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([stale, fresh]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
     monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
     filed = []
@@ -222,7 +222,7 @@ def test_run_pipeline_boosts_audio_before_filing(tmp_path, monkeypatch):
     paper = _paper_for(item, doi="10.1234/whale")
     events = []
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
     monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: _ep(paper, tmp_path))
     monkeypatch.setattr("rabbit_hole.run.file_episode",
@@ -249,7 +249,7 @@ def test_run_pipeline_files_even_when_boost_fails(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise AudioBoostError("ffmpeg blew up")
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
     monkeypatch.setattr("rabbit_hole.run.generate", lambda *a, **k: _ep(paper, tmp_path))
     monkeypatch.setattr("rabbit_hole.run.file_episode",
@@ -271,7 +271,7 @@ def test_run_pipeline_updates_run_row_incrementally(tmp_path, monkeypatch):
     by_link = {it.link: _paper_for(it) for it in items}
     counts_seen = []
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter(items))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
     monkeypatch.setattr("rabbit_hole.run.generate", lambda paper, *a, **k: _ep(paper, tmp_path))
     monkeypatch.setattr(
@@ -333,7 +333,7 @@ def test_pending_row_covers_the_generate_window(tmp_path, monkeypatch):
         during_generate.extend(st.list_pending())   # row exists while we generate
         return _ep(p, tmp_path)
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
     monkeypatch.setattr("rabbit_hole.run.generate", fake_generate)
     monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, p, t: tmp_path / "f.m4a")
@@ -353,7 +353,7 @@ def test_pending_row_cleared_when_generate_fails(tmp_path, monkeypatch):
     item = _item("Whale song", "http://x/10.1234/whale")
     paper = _paper_for(item, doi="10.1234/whale")
 
-    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
     monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
     monkeypatch.setattr("rabbit_hole.run.generate",
                         lambda *a, **k: (_ for _ in ()).throw(NotebookLMError("boom")))
@@ -384,7 +384,7 @@ def test_run_pipeline_adopts_orphans_before_polling(tmp_path, monkeypatch):
     monkeypatch.setattr("rabbit_hole.run.recover_orphans",
                         lambda cmd, s, a, log: [rec])
     monkeypatch.setattr("rabbit_hole.run.poll_all",
-                        lambda c, s: (_ for _ in ()).throw(AssertionError("target met by adoption — no poll")))
+                        lambda c, s, **k: (_ for _ in ()).throw(AssertionError("target met by adoption — no poll")))
     monkeypatch.setattr("rabbit_hole.run.file_episode",
                         lambda e, b, p, t: (filed.append(e.paper.title) or (tmp_path / "f.m4a")))
     monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
