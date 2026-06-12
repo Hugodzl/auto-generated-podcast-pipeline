@@ -10,6 +10,7 @@ from rabbit_hole.audio import AudioBoostError, boost_loudness
 from rabbit_hole.notebooklm import GeneratedEpisode, NotebookLMError, generate
 from rabbit_hole.plex import file_episode
 from rabbit_hole.ranker import rank
+from rabbit_hole.recovery import recover_orphans
 from rabbit_hole.resolver import resolve, extract_doi
 from rabbit_hole.sources import poll_all
 from rabbit_hole.state import State, hash_str
@@ -62,6 +63,21 @@ def _publish(ep: GeneratedEpisode, topic_bucket: str, score: float, cfg: Config,
 
 def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
                  logger, run_id: int | None = None) -> int:
+    token = _plex_token(cfg)
+    target = cfg.schedule.episodes_per_run
+    generated = 0
+
+    # 0. adopt orphans from a previously killed run first: their audio is already
+    #    paid for. They count toward this run's target.
+    for r in recover_orphans(cfg.notebooklm.nlm_command, state, Path(audio_dir), logger):
+        _publish(r.episode, r.topic_bucket, r.score, cfg, state, token, logger, run_id=run_id)
+        state.delete_pending(r.pending_id)
+        generated += 1
+        if run_id is not None:
+            state.set_run_episodes(run_id, generated)
+    if generated >= target:
+        return generated
+
     # 1. ingest
     items = list(poll_all(cfg, state))
     logger.info("ingested", count=len(items))
@@ -77,9 +93,6 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
     logger.info("ranked", count=len(ranked))
 
     # 4. walk the ranked list: resolve lazily, generate + file, stop once enough episodes exist.
-    token = _plex_token(cfg)
-    target = cfg.schedule.episodes_per_run
-    generated = 0
     failures = 0
     for s in ranked:
         if generated >= target:

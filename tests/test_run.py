@@ -362,3 +362,36 @@ def test_pending_row_cleared_when_generate_fails(tmp_path, monkeypatch):
     count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
     assert count == 0
     assert st.list_pending() == []   # a clean failure is not an orphan
+
+
+def test_run_pipeline_adopts_orphans_before_polling(tmp_path, monkeypatch):
+    from rabbit_hole.recovery import RecoveredEpisode
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    run_id = st.start_run()
+    cfg = _config(episodes_per_run=1)
+    item = _item("Recovered whale", "http://x/r1")
+    paper = _paper_for(item)
+    pid = st.add_pending(
+        run_id=1, doi=None, title=paper.title, summary=paper.abstract, link=item.link,
+        source_name="Nature", source_weight=1.0,
+        published_at=item.published_at.isoformat(), pdf_path="data/pdfs/r1.pdf",
+        language="en", topic_bucket="Animals", score=2.0,
+    )
+    rec = RecoveredEpisode(_ep(paper, tmp_path), "Animals", 2.0, pid)
+    filed = []
+
+    monkeypatch.setattr("rabbit_hole.run.recover_orphans",
+                        lambda cmd, s, a, log: [rec])
+    monkeypatch.setattr("rabbit_hole.run.poll_all",
+                        lambda c, s: (_ for _ in ()).throw(AssertionError("target met by adoption — no poll")))
+    monkeypatch.setattr("rabbit_hole.run.file_episode",
+                        lambda e, b, p, t: (filed.append(e.paper.title) or (tmp_path / "f.m4a")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path,
+                         logger=_NullLog(), run_id=run_id)
+    assert count == 1
+    assert filed == ["Recovered whale"]
+    assert st.list_pending() == []
+    assert st.episode_titles_for_run(run_id) == ["Animals - Recovered whale"]
