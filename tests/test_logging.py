@@ -1,7 +1,10 @@
+import logging
+from logging.handlers import RotatingFileHandler
+
 import respx
 import httpx
 
-from rabbit_hole.logging_config import post_discord
+from rabbit_hole.logging_config import configure_logging, post_discord
 
 
 @respx.mock
@@ -22,8 +25,6 @@ def test_post_discord_never_raises_on_bad_url():
 
 
 def test_configure_logging_returns_usable_logger(tmp_path):
-    from rabbit_hole.logging_config import configure_logging
-
     log_dir = tmp_path / "logs"
     logger = configure_logging(log_dir, webhook_url=None)
     assert log_dir.exists()
@@ -36,10 +37,6 @@ def test_configure_logging_writes_json_events_to_utf8_file(tmp_path):
     # The headless scheduled run has no console, so structured events MUST land
     # in rabbit_hole.log (not stdout), and the file MUST be UTF-8 so non-ASCII
     # paper titles don't crash logging on a cp1252 Windows host.
-    import logging
-
-    from rabbit_hole.logging_config import configure_logging
-
     log_dir = tmp_path / "logs"
     logger = configure_logging(log_dir, webhook_url=None)
     logger.info("filed", title="Café déjà vu ✓ 你好")
@@ -52,12 +49,6 @@ def test_configure_logging_writes_json_events_to_utf8_file(tmp_path):
     assert "Café déjà vu ✓ 你好" in content
 
 
-import logging
-from logging.handlers import RotatingFileHandler
-
-from rabbit_hole.logging_config import configure_logging
-
-
 def test_configure_logging_silences_http_libs(tmp_path):
     configure_logging(tmp_path, None)
     for name in ("httpx", "httpcore", "plexapi"):
@@ -67,4 +58,6 @@ def test_configure_logging_silences_http_libs(tmp_path):
 def test_configure_logging_rotates(tmp_path):
     configure_logging(tmp_path, None)
     handlers = logging.getLogger().handlers
-    assert any(isinstance(h, RotatingFileHandler) for h in handlers)
+    rotating = [h for h in handlers if isinstance(h, RotatingFileHandler)]
+    assert rotating
+    assert rotating[0].maxBytes > 0 and rotating[0].backupCount > 0  # rotation actually enabled
