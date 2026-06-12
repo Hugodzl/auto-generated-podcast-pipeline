@@ -114,6 +114,11 @@ def main() -> int:
         lock = acquire_lock(DATA_DIR / "run.lock")
     except PipelineLockError:
         logger.warning("run_already_in_progress")
+        if webhook:
+            post_discord(webhook, "Rabbit Hole: another run is already in progress — skipped.")
+        # Exit 0 on purpose: a contention skip is an intentional no-op, and a
+        # non-zero code would make Task Scheduler mark the weekly job failed
+        # (and potentially retry). The Discord note above surfaces the overlap.
         return 0
     try:
         state = State(DATA_DIR / "state.db", MIGRATIONS)
