@@ -5,6 +5,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+import structlog
+
 from rabbit_hole.config import NotebookLMConfig
 from rabbit_hole.resolver import Paper
 
@@ -14,6 +16,8 @@ _AUDIO_POLL_INTERVAL = 15      # seconds between studio-artifact status polls
 _AUDIO_POLL_TIMEOUT = 1800     # max seconds to wait for audio generation
 _DOWNLOAD_RETRY_INTERVAL = 30  # seconds between download attempts
 _DOWNLOAD_MAX_ATTEMPTS = 30    # ~15 min total: ride out the status->rendition lag
+
+_log = structlog.get_logger()
 
 
 class NotebookLMError(RuntimeError):
@@ -65,7 +69,9 @@ def _find_notebook_id(nlm_command: str, title: str) -> str | None:
 def _wait_for_audio(nlm_command: str, notebook_id: str) -> str | None:
     """Poll studio artifacts until the audio overview is completed. Returns the
     audio artifact id, or None if it does not complete before the timeout."""
-    deadline = time.monotonic() + _AUDIO_POLL_TIMEOUT
+    started = time.monotonic()
+    deadline = started + _AUDIO_POLL_TIMEOUT
+    polls = 0
     while True:
         artifacts = _nlm_json(
             nlm_command, ["status", "artifacts", notebook_id, "--json"], _CALL_TIMEOUT
@@ -74,6 +80,10 @@ def _wait_for_audio(nlm_command: str, notebook_id: str) -> str | None:
             for art in artifacts:
                 if art.get("type") == "audio" and art.get("status") == "completed":
                     return art.get("id")
+        polls += 1
+        if polls % 4 == 0:  # one tick per minute at the 15s interval
+            _log.info("nlm_waiting", notebook_id=notebook_id,
+                      elapsed_s=round(time.monotonic() - started))
         if time.monotonic() >= deadline:
             return None
         time.sleep(_AUDIO_POLL_INTERVAL)
@@ -98,6 +108,8 @@ def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
         if result is not None and result.returncode == 0 and out_path.exists():
             return True
         if attempt < _DOWNLOAD_MAX_ATTEMPTS - 1:
+            _log.warning("nlm_download_retry", notebook_id=notebook_id,
+                         attempt=attempt + 1)
             time.sleep(_DOWNLOAD_RETRY_INTERVAL)
     return False
 
@@ -124,6 +136,7 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         notebook_id = _find_notebook_id(nlm_command, title)
         if not notebook_id:
             return None
+        _log.info("nlm_notebook_created", notebook_id=notebook_id, pdf=pdf_path.name)
 
         added = _nlm(
             nlm_command,
@@ -133,6 +146,7 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         )
         if added is None or added.returncode != 0:
             return None
+        _log.info("nlm_source_added", notebook_id=notebook_id)
 
         audio_args = ["audio", "create", notebook_id,
                       "--format", audio_format, "--length", audio_length]
@@ -142,10 +156,12 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         requested = _nlm(nlm_command, audio_args, _CALL_TIMEOUT)
         if requested is None or requested.returncode != 0:
             return None
+        _log.info("nlm_audio_requested", notebook_id=notebook_id)
 
         artifact_id = _wait_for_audio(nlm_command, notebook_id)
         if not artifact_id:
             return None
+        _log.info("nlm_audio_ready", notebook_id=notebook_id, artifact_id=artifact_id)
 
         out_path = out_dir / f"{notebook_id}_audio.m4a"
         if _download_audio(nlm_command, notebook_id, artifact_id, out_path):
@@ -155,6 +171,7 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         if notebook_id:
             _nlm(nlm_command, ["notebook", "delete", notebook_id, "--confirm"],
                  _CALL_TIMEOUT)
+            _log.info("nlm_notebook_deleted", notebook_id=notebook_id)
 
 
 def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,

@@ -310,3 +310,39 @@ def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
     assert captured["audio_length"] == "long"        # override wins
     assert captured["audio_format"] == "deep_dive"    # config default
     assert captured["focus"] == ""                    # config default
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat / structured-event tests
+# ---------------------------------------------------------------------------
+
+from structlog.testing import capture_logs  # noqa: E402
+
+
+def _fake_nlm_heartbeat(cmd, args, timeout):
+    if args[:2] == ["download", "audio"]:
+        Path(args[args.index("--output") + 1]).write_bytes(b"x")
+    return _Result()
+
+
+def test_run_nlm_emits_heartbeat_events(monkeypatch, tmp_path):
+    monkeypatch.setattr(notebooklm, "_nlm", _fake_nlm_heartbeat)
+    monkeypatch.setattr(notebooklm, "_find_notebook_id", lambda c, t: "nb1")
+    monkeypatch.setattr(notebooklm, "_wait_for_audio", lambda c, n: "art1")
+    with capture_logs() as logs:
+        out = notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path)
+    assert out is not None
+    events = [entry["event"] for entry in logs]
+    for expected in ("nlm_notebook_created", "nlm_source_added",
+                     "nlm_audio_requested", "nlm_audio_ready",
+                     "nlm_notebook_deleted"):
+        assert expected in events, f"missing {expected} in {events}"
+
+
+def test_wait_for_audio_emits_waiting_tick(monkeypatch):
+    responses = iter([[]] * 5 + [[{"type": "audio", "status": "completed", "id": "a1"}]])
+    monkeypatch.setattr(notebooklm, "_nlm_json", lambda c, a, t: next(responses))
+    monkeypatch.setattr(notebooklm.time, "sleep", lambda s: None)
+    with capture_logs() as logs:
+        assert notebooklm._wait_for_audio("nlm", "nb1") == "a1"
+    assert "nlm_waiting" in [entry["event"] for entry in logs]
