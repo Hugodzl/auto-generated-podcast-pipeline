@@ -27,6 +27,15 @@ def _plex_token(cfg: Config) -> str:
     return keyring.get_password(KEYRING_SERVICE, "plex_token") or ""
 
 
+def _startup_recovery(state: State, webhook: str | None, logger) -> None:
+    stale = state.close_stale_runs()
+    if stale:
+        logger.warning("stale_runs_closed", count=stale)
+        if webhook:
+            post_discord(webhook,
+                         f"Rabbit Hole: closed {stale} stale run(s) from a previous crash.")
+
+
 def _publish(ep: GeneratedEpisode, topic_bucket: str, score: float, cfg: Config,
              state: State, token: str, logger, run_id: int | None = None) -> None:
     """Post-generation steps shared by the normal walk and orphan recovery:
@@ -102,6 +111,7 @@ def main() -> int:
     logger = configure_logging(LOG_DIR, webhook)
     state = State(DATA_DIR / "state.db", MIGRATIONS)
     state.init()
+    _startup_recovery(state, webhook, logger)
     run_id = state.start_run()
     try:
         count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR,

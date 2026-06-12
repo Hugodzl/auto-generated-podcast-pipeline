@@ -295,3 +295,27 @@ def test_run_pipeline_updates_run_row_incrementally(tmp_path, monkeypatch):
     # episodes are linked to the run
     assert st.episode_titles_for_run(run_id) == [
         "Animals - Whale paper 0", "Animals - Whale paper 1"]
+
+
+def test_startup_recovery_closes_stale_runs_and_notifies(tmp_path, monkeypatch):
+    from rabbit_hole.run import _startup_recovery
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    st.start_run()                      # stale: never finished
+    posts = []
+    monkeypatch.setattr("rabbit_hole.run.post_discord",
+                        lambda url, msg: posts.append((url, msg)))
+    _startup_recovery(st, "http://hook", _NullLog())
+    assert st.close_stale_runs() == 0   # already closed by the helper
+    assert posts and "stale" in posts[0][1]
+
+
+def test_startup_recovery_quiet_when_nothing_stale(tmp_path, monkeypatch):
+    from rabbit_hole.run import _startup_recovery
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    posts = []
+    monkeypatch.setattr("rabbit_hole.run.post_discord",
+                        lambda url, msg: posts.append(msg))
+    _startup_recovery(st, "http://hook", _NullLog())
+    assert posts == []
