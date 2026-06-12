@@ -58,3 +58,12 @@ def test_run_lifecycle(tmp_db, migrations_dir):
     st.finish_run(run_id, status="ok", episodes_generated=5, error=None)
     row = st.conn.execute("SELECT status, episodes_generated FROM runs WHERE id=?", (run_id,)).fetchone()
     assert row[0] == "ok" and row[1] == 5
+
+
+def test_migrations_apply_once(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    applied = st.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+    assert applied >= 1  # one row per migration file
+    st.init()  # second init: idempotent, re-applies nothing, raises nothing
+    assert st.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == applied

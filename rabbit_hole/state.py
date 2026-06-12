@@ -18,8 +18,21 @@ class State:
         self.conn.execute("PRAGMA journal_mode=WAL")
 
     def init(self) -> None:
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations "
+            "(filename TEXT PRIMARY KEY, applied_at TEXT)"
+        )
         for sql_file in sorted(self.migrations_dir.glob("*.sql")):
+            done = self.conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE filename=?", (sql_file.name,)
+            ).fetchone()
+            if done:
+                continue
             self.conn.executescript(sql_file.read_text(encoding="utf-8"))
+            self.conn.execute(
+                "INSERT INTO schema_migrations (filename, applied_at) VALUES (?,?)",
+                (sql_file.name, datetime.utcnow().isoformat()),
+            )
         self.conn.commit()
 
     # --- seen items ---
