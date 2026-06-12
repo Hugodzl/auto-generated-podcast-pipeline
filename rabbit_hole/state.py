@@ -37,12 +37,13 @@ class State:
             # before. Without this, executescript auto-commits each statement and
             # non-idempotent DDL (ALTER TABLE in 002) could re-run on restart and
             # fail.
+            escaped_name = sql_file.name.replace("'", "''")  # SQL string-literal escaping
             try:
                 self.conn.executescript(
                     "BEGIN;\n"
                     f"{script}\n"
                     "INSERT INTO schema_migrations (filename, applied_at) "
-                    f"VALUES ('{sql_file.name}', '{datetime.utcnow().isoformat()}');\n"
+                    f"VALUES ('{escaped_name}', '{datetime.utcnow().isoformat()}');\n"
                     "COMMIT;"
                 )
             except Exception:
