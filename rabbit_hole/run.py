@@ -108,6 +108,9 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 raise
             continue
+        # A raise out of _publish leaves the pending row behind on purpose: the
+        # notebook is already deleted (generate's finally), so the next run's
+        # recovery pass purges the row rather than adopting anything.
         _publish(ep, s.topic_bucket, s.score, cfg, state, token, logger, run_id=run_id)
         state.delete_pending(pending_id)
         generated += 1
