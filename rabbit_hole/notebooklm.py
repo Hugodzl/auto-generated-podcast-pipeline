@@ -116,7 +116,7 @@ def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
 
 def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
              audio_format: str = "deep_dive", audio_length: str = "default",
-             focus: str = "") -> Path | None:
+             focus: str = "", language: str = "en") -> Path | None:
     """Generate an audio overview for one PDF via the nlm CLI.
 
     Multi-step: create a notebook, add the PDF as a source (waiting for ingest),
@@ -149,7 +149,8 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         _log.info("nlm_source_added", notebook_id=notebook_id)
 
         audio_args = ["audio", "create", notebook_id,
-                      "--format", audio_format, "--length", audio_length]
+                      "--format", audio_format, "--length", audio_length,
+                      "--language", language]
         if focus:
             audio_args += ["--focus", focus]
         audio_args.append("--confirm")
@@ -185,7 +186,8 @@ def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,
     length = audio_length if audio_length is not None else config.audio_length
     foc = focus if focus is not None else config.focus
     audio = _run_nlm(config.nlm_command, paper.pdf_path, Path(out_dir),
-                     audio_format=fmt, audio_length=length, focus=foc)
+                     audio_format=fmt, audio_length=length, focus=foc,
+                     language=paper.language)
     if audio is None or not audio.exists():
         raise NotebookLMError(f"nlm produced no audio for {paper.title!r}")
     return GeneratedEpisode(

@@ -286,14 +286,16 @@ def test_generate_passes_config_audio_params_to_run_nlm(tmp_path, monkeypatch):
     audio.write_bytes(b"a")
     captured = {}
 
-    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus):
-        captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus)
+    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus, language):
+        captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus,
+                        language=language)
         return audio
 
     monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
     generate(paper, NotebookLMConfig(audio_format="brief", audio_length="long", focus="X"),
              out_dir=tmp_path)
-    assert captured == {"audio_format": "brief", "audio_length": "long", "focus": "X"}
+    assert captured == {"audio_format": "brief", "audio_length": "long", "focus": "X",
+                        "language": "en"}
 
 
 def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
@@ -302,8 +304,9 @@ def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
     audio.write_bytes(b"a")
     captured = {}
 
-    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus):
-        captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus)
+    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus, language):
+        captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus,
+                        language=language)
         return audio
 
     monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
@@ -311,6 +314,7 @@ def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
     assert captured["audio_length"] == "long"        # override wins
     assert captured["audio_format"] == "deep_dive"    # config default
     assert captured["focus"] == ""                    # config default
+    assert captured["language"] == "en"               # from paper fixture (language="en")
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +350,46 @@ def test_wait_for_audio_emits_waiting_tick(monkeypatch):
     with capture_logs() as logs:
         assert notebooklm._wait_for_audio("nlm", "nb1") == "a1"
     assert "nlm_waiting" in [entry["event"] for entry in logs]
+
+
+# ---------------------------------------------------------------------------
+# Language forwarding tests
+# ---------------------------------------------------------------------------
+
+
+def test_run_nlm_passes_language_to_audio_create(monkeypatch, tmp_path):
+    audio_args = []
+
+    def fake_nlm(cmd, args, timeout):
+        if args[:2] == ["audio", "create"]:
+            audio_args[:] = args
+        if args[:2] == ["download", "audio"]:
+            Path(args[args.index("--output") + 1]).write_bytes(b"x")
+        return _Result()
+
+    monkeypatch.setattr(notebooklm, "_nlm", fake_nlm)
+    monkeypatch.setattr(notebooklm, "_find_notebook_id", lambda c, t: "nb1")
+    monkeypatch.setattr(notebooklm, "_wait_for_audio", lambda c, n: "art1")
+    out = notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path, language="fr")
+    assert out is not None
+    assert audio_args[audio_args.index("--language") + 1] == "fr"
+    assert audio_args[-1] == "--confirm"
+
+
+def test_generate_forwards_paper_language(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run_nlm(cmd, pdf, out_dir, *, audio_format, audio_length, focus, language):
+        seen["language"] = language
+        out = Path(out_dir) / "x.m4a"
+        out.write_bytes(b"x")
+        return out
+
+    monkeypatch.setattr(notebooklm, "_run_nlm", fake_run_nlm)
+    item = FeedItem(source_name="S", source_weight=1.0, title="T", summary="R",
+                    link="http://x", published_at=datetime.now(timezone.utc))
+    paper = Paper(doi=None, title="T", authors=[], abstract="R",
+                  published_at=item.published_at, pdf_path=tmp_path / "p.pdf",
+                  language="fr", source=item)
+    notebooklm.generate(paper, NotebookLMConfig(nlm_command="nlm"), tmp_path)
+    assert seen["language"] == "fr"
