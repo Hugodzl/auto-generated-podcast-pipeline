@@ -58,9 +58,37 @@ def test_run_lifecycle(tmp_db, migrations_dir):
     st = State(tmp_db, migrations_dir)
     st.init()
     run_id = st.start_run()
-    st.finish_run(run_id, status="ok", episodes_generated=5, error=None)
-    row = st.conn.execute("SELECT status, episodes_generated FROM runs WHERE id=?", (run_id,)).fetchone()
-    assert row[0] == "ok" and row[1] == 5
+    st.set_run_episodes(run_id, 2)
+    st.finish_run(run_id, status="partial", error=None)
+    row = st.conn.execute(
+        "SELECT status, episodes_generated FROM runs WHERE id=?", (run_id,)
+    ).fetchone()
+    assert row == ("partial", 2)
+
+
+def test_close_stale_runs(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    stale_id = st.start_run()           # never finished: simulates a killed process
+    assert st.close_stale_runs() == 1
+    status, err = st.conn.execute(
+        "SELECT status, error FROM runs WHERE id=?", (stale_id,)
+    ).fetchone()
+    assert status == "aborted" and "stale" in err
+    assert st.close_stale_runs() == 0   # nothing left to close
+
+
+def test_record_episode_links_run_and_lists_titles(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    run_id = st.start_run()
+    st.record_episode(doi=None, title_hash="h1", title="Whale song", language="en",
+                      source_name="Nature", topic_bucket="Animals", score=1.0,
+                      pdf_path="p.pdf", audio_path="a.m4a", run_id=run_id)
+    st.record_episode(doi=None, title_hash="h2", title="Old one", language="en",
+                      source_name="Nature", topic_bucket="AI studies", score=1.0,
+                      pdf_path="p.pdf", audio_path="b.m4a")  # run_id optional
+    assert st.episode_titles_for_run(run_id) == ["Animals - Whale song"]
 
 
 def test_failed_migration_applies_nothing(tmp_path):

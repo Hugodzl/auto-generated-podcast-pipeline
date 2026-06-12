@@ -96,16 +96,23 @@ class State:
         return cur.fetchone() is not None
 
     def record_episode(self, *, doi, title_hash, title, language, source_name,
-                       topic_bucket, score, pdf_path, audio_path) -> int:
+                       topic_bucket, score, pdf_path, audio_path, run_id=None) -> int:
         cur = self.conn.execute(
             "INSERT INTO episodes (doi, title_hash, title, language, source_name, "
-            "topic_bucket, score, pdf_path, audio_path, generated_at, filed_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "topic_bucket, score, pdf_path, audio_path, generated_at, filed_at, run_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (doi, title_hash, title, language, source_name, topic_bucket, score,
-             pdf_path, audio_path, datetime.utcnow().isoformat(), None),
+             pdf_path, audio_path, datetime.utcnow().isoformat(), None, run_id),
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def episode_titles_for_run(self, run_id: int) -> list[str]:
+        cur = self.conn.execute(
+            "SELECT topic_bucket, title FROM episodes WHERE run_id=? ORDER BY id",
+            (run_id,),
+        )
+        return [f"{bucket} - {title}" for bucket, title in cur.fetchall()]
 
     # --- api cache ---
     def cache_get(self, api: str, query_hash: str, ttl_days: float) -> dict | None:
@@ -139,9 +146,27 @@ class State:
         self.conn.commit()
         return cur.lastrowid
 
-    def finish_run(self, run_id: int, status: str, episodes_generated: int, error: str | None) -> None:
+    def set_run_episodes(self, run_id: int, episodes_generated: int) -> None:
         self.conn.execute(
-            "UPDATE runs SET finished_at=?, status=?, episodes_generated=?, error=? WHERE id=?",
-            (datetime.utcnow().isoformat(), status, episodes_generated, error, run_id),
+            "UPDATE runs SET episodes_generated=? WHERE id=?",
+            (episodes_generated, run_id),
         )
         self.conn.commit()
+
+    def finish_run(self, run_id: int, status: str, error: str | None) -> None:
+        self.conn.execute(
+            "UPDATE runs SET finished_at=?, status=?, error=? WHERE id=?",
+            (datetime.utcnow().isoformat(), status, error, run_id),
+        )
+        self.conn.commit()
+
+    def close_stale_runs(self) -> int:
+        """Close out 'running' rows left behind by a killed process. Call BEFORE
+        start_run, or the fresh row gets aborted too."""
+        cur = self.conn.execute(
+            "UPDATE runs SET finished_at=?, status='aborted', "
+            "error='stale: process died without finishing' WHERE status='running'",
+            (datetime.utcnow().isoformat(),),
+        )
+        self.conn.commit()
+        return cur.rowcount

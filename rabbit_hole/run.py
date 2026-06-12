@@ -92,14 +92,14 @@ def main() -> int:
     run_id = state.start_run()
     try:
         count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR, logger=logger)
-        state.finish_run(run_id, status="ok" if count else "partial",
-                         episodes_generated=count, error=None)
+        state.set_run_episodes(run_id, count)
+        state.finish_run(run_id, status="ok" if count else "partial", error=None)
         return 0
     except Exception as e:  # noqa: BLE001 - top-level guard
         logger.error("run_failed", error=str(e))
         if webhook:
             post_discord(webhook, f"Rabbit Hole run failed: {e}")
-        state.finish_run(run_id, status="failed", episodes_generated=0, error=str(e))
+        state.finish_run(run_id, status="failed", error=str(e))
         return 1
 
 
