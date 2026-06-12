@@ -22,18 +22,32 @@ class State:
             "CREATE TABLE IF NOT EXISTS schema_migrations "
             "(filename TEXT PRIMARY KEY, applied_at TEXT)"
         )
+        self.conn.commit()
         for sql_file in sorted(self.migrations_dir.glob("*.sql")):
             done = self.conn.execute(
                 "SELECT 1 FROM schema_migrations WHERE filename=?", (sql_file.name,)
             ).fetchone()
             if done:
                 continue
-            self.conn.executescript(sql_file.read_text(encoding="utf-8"))
-            self.conn.execute(
-                "INSERT INTO schema_migrations (filename, applied_at) VALUES (?,?)",
-                (sql_file.name, datetime.utcnow().isoformat()),
-            )
-        self.conn.commit()
+            script = sql_file.read_text(encoding="utf-8").strip()
+            if not script.endswith(";"):
+                script += ";"
+            # One explicit transaction per migration: the DDL and its tracking row
+            # commit together, so a kill mid-migration leaves the DB exactly as
+            # before. Without this, executescript auto-commits each statement and
+            # non-idempotent DDL (ALTER TABLE in 002) could re-run on restart and
+            # fail.
+            try:
+                self.conn.executescript(
+                    "BEGIN;\n"
+                    f"{script}\n"
+                    "INSERT INTO schema_migrations (filename, applied_at) "
+                    f"VALUES ('{sql_file.name}', '{datetime.utcnow().isoformat()}');\n"
+                    "COMMIT;"
+                )
+            except Exception:
+                self.conn.rollback()
+                raise
 
     # --- seen items ---
     def has_seen(self, source_name: str, link_hash: str) -> bool:

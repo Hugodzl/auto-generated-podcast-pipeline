@@ -1,4 +1,7 @@
+import sqlite3
 from datetime import datetime, timedelta
+
+import pytest
 
 from rabbit_hole.state import State
 
@@ -60,10 +63,29 @@ def test_run_lifecycle(tmp_db, migrations_dir):
     assert row[0] == "ok" and row[1] == 5
 
 
+def test_failed_migration_applies_nothing(tmp_path):
+    bad_dir = tmp_path / "migrations"
+    bad_dir.mkdir()
+    (bad_dir / "001_bad.sql").write_text(
+        "CREATE TABLE half_done (x TEXT);\n"
+        "ALTER TABLE does_not_exist ADD COLUMN y;\n",
+        encoding="utf-8",
+    )
+    st = State(tmp_path / "state.db", bad_dir)
+    with pytest.raises(sqlite3.OperationalError):
+        st.init()
+    # the failed migration's partial DDL rolled back with the transaction...
+    tables = {r[0] for r in st.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "half_done" not in tables
+    # ...and it is not recorded as applied
+    assert st.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 0
+
+
 def test_migrations_apply_once(tmp_db, migrations_dir):
     st = State(tmp_db, migrations_dir)
     st.init()
     applied = st.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-    assert applied >= 1  # one row per migration file
+    assert applied == len(list(migrations_dir.glob("*.sql")))
     st.init()  # second init: idempotent, re-applies nothing, raises nothing
     assert st.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == applied
