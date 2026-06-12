@@ -364,6 +364,32 @@ def test_pending_row_cleared_when_generate_fails(tmp_path, monkeypatch):
     assert st.list_pending() == []   # a clean failure is not an orphan
 
 
+def test_run_summary_lists_titles_and_failing_sources(tmp_path):
+    from rabbit_hole.run import _run_summary
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    run_id = st.start_run()
+    st.record_episode(doi=None, title_hash="h1", title="Whale song", language="en",
+                      source_name="Nature", topic_bucket="Animals", score=1.0,
+                      pdf_path="p.pdf", audio_path="a.m4a", run_id=run_id)
+    for _ in range(3):
+        st.bump_source_failure("DeadFeed", "boom")
+
+    msg = _run_summary(st, run_id, status="partial", count=1, target=3)
+    assert "partial: 1/3" in msg
+    assert "Animals - Whale song" in msg
+    assert "DeadFeed" in msg
+
+
+def test_run_summary_handles_empty_run(tmp_path):
+    from rabbit_hole.run import _run_summary
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    run_id = st.start_run()
+    msg = _run_summary(st, run_id, status="partial", count=0, target=1)
+    assert "(none)" in msg
+
+
 def test_run_pipeline_adopts_orphans_before_polling(tmp_path, monkeypatch):
     from rabbit_hole.recovery import RecoveredEpisode
     st = State(tmp_path / "state.db", MIGRATIONS)

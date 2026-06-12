@@ -39,6 +39,14 @@ def _startup_recovery(state: State, webhook: str | None, logger) -> None:
                          f"Rabbit Hole: closed {stale} stale run(s) from a previous crash.")
 
 
+def _run_summary(state: State, run_id: int, status: str, count: int, target: int) -> str:
+    titles = state.episode_titles_for_run(run_id)
+    lines = "\n".join(f"- {t}" for t in titles) if titles else "(none)"
+    warnings = "".join(f"\nWARNING: source '{name}' has failed {n} runs in a row"
+                       for name, n in state.failing_sources())
+    return f"Rabbit Hole run {status}: {count}/{target} episodes\n{lines}{warnings}"
+
+
 def _publish(ep: GeneratedEpisode, topic_bucket: str, score: float, cfg: Config,
              state: State, token: str, logger, run_id: int | None = None) -> None:
     """Post-generation steps shared by the normal walk and orphan recovery:
@@ -161,6 +169,9 @@ def main() -> int:
             state.finish_run(run_id, status=status, error=None)
             logger.info("run_complete", status=status, episodes=count,
                         elapsed_s=round(time.monotonic() - started))
+            if webhook:
+                post_discord(webhook, _run_summary(state, run_id, status, count,
+                                                   cfg.schedule.episodes_per_run))
             return 0
         except Exception as e:  # noqa: BLE001 - top-level guard
             logger.error("run_failed", error=str(e))
