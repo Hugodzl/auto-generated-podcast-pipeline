@@ -19,6 +19,20 @@ Weekly pipeline: science RSS -> paper PDF -> NotebookLM audio -> Plex.
    `D:\Videos\PlexLibrary\Podcasts\The Random Rabbit Hole`.
 8. Dry run: `uv run python -m rabbit_hole.run` with `episodes_per_run = 1` in config.
 
+## Running manually
+
+A run takes ~10 minutes *per episode*. NEVER launch it as a child of an
+interactive session you might close (terminal tab, Claude Code session, SSH) —
+the process tree dies with the session (this killed run 5 mid-episode). Use the
+detached launcher:
+
+    powershell -ExecutionPolicy Bypass -File scripts\run_detached.ps1
+
+It registers/overwrites a one-off Scheduled Task ("RabbitHoleManual") and starts
+it immediately, fully detached. Watch progress with:
+
+    Get-Content logs\rabbit_hole.log -Tail 5 -Wait
+
 ## Scheduling (Windows Task Scheduler)
 
 Create a weekly task, Monday 07:00:
