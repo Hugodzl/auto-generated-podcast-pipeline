@@ -78,6 +78,8 @@ def poll_source(source: SourceConfig, state: State) -> Iterator[FeedItem]:
 
 def poll_all(config: Config, state: State, logger=None) -> Iterator[FeedItem]:
     for source in config.sources:
+        if not source.enabled:
+            continue  # skipped, not polled: leave its health counters untouched
         new_items = 0
         try:
             for item in poll_source(source, state):

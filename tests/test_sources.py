@@ -101,3 +101,34 @@ def test_poll_all_logs_failures_and_counts(tmp_path, monkeypatch):
     assert ("source_polled", {"source": "Alive", "new_items": 0}) in log.events
     assert st.bump_source_failure("Dead", "x") == 2   # poll already counted 1
     assert st.failing_sources(threshold=1) == [("Dead", 2)]
+
+
+def test_poll_all_leaves_disabled_source_health_untouched(tmp_path, monkeypatch):
+    from pathlib import Path
+    from rabbit_hole.config import Config
+    from rabbit_hole.state import State
+    migrations = Path(__file__).parent.parent / "migrations"
+    st = State(tmp_path / "state.db", migrations)
+    st.init()
+    st.bump_source_failure("Off", "old failure")   # failing, then operator disables it
+    cfg = Config.model_validate({
+        "schedule": {"cron": "0 7 * * MON", "episodes_per_run": 1},
+        "ranking": {"recency_half_life_days": 30},
+        "topics": [{"name": "T", "weight": 1.0, "keywords": ["k"]}],
+        "sources": [{"name": "Off", "type": "rss", "url": "http://off",
+                     "weight": 1.0, "enabled": False}],
+        "notebooklm": {"nlm_command": "nlm"},
+        "plex": {"base_url": "http://127.0.0.1:32400/", "library_name": "L",
+                 "target_folder": "ignored"},
+        "apis": {"unpaywall_email": "e@x.com"},
+        "notifications": {"discord_webhook_keyring_key": "k"},
+    })
+
+    def _boom(source, state):
+        raise AssertionError("disabled source must not be polled")
+
+    monkeypatch.setattr("rabbit_hole.sources.poll_source", _boom)
+    log = _SpyLog()
+    assert list(poll_all(cfg, st, logger=log)) == []
+    assert log.events == []                               # no source_polled for a skip
+    assert st.failing_sources(threshold=1) == [("Off", 1)]  # counter NOT reset
