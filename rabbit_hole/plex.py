@@ -137,3 +137,23 @@ def _unify_albums(section, server) -> None:
     ids = ",".join(str(a.ratingKey) for a in losers)
     server.query(f"/library/metadata/{winner.ratingKey}/merge?ids={ids}",
                  method=server._session.put)
+
+
+def _generation_dt(name: str, mtimes: dict[str, float], db_times: dict[str, str]):
+    """Naive-LOCAL datetime for ordering/date: DB generated_at (naive UTC) converted
+    to local if present, else the file's mtime (already local)."""
+    ts = db_times.get(name)
+    if ts:
+        return (datetime.fromisoformat(ts)
+                .replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None))
+    return datetime.fromtimestamp(mtimes[name])
+
+
+def plan_episode_numbering(files: list[str], mtimes: dict[str, float],
+                           db_times: dict[str, str]) -> list[tuple[str, int, date]]:
+    """Order `files` (basenames) oldest->newest and assign track numbers 1..N and a
+    generation date each. DB generated_at drives ordering+date where available; file
+    mtime is the fallback. Ties broken by filename for determinism."""
+    ordered = sorted(files, key=lambda n: (_generation_dt(n, mtimes, db_times), n))
+    return [(n, i, _generation_dt(n, mtimes, db_times).date())
+            for i, n in enumerate(ordered, start=1)]

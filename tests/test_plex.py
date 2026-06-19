@@ -199,6 +199,34 @@ def test_tag_audio_writes_tracknumber_and_generation_date(tmp_path, monkeypatch)
     assert fake.get("date") == "2026-06-19"   # generation day, not paper year
 
 
+def test_plan_episode_numbering_orders_and_numbers():
+    from datetime import datetime, timezone, date
+    from rabbit_hole.plex import plan_episode_numbering
+
+    files = ["c_new.m4a", "a_old.m4a", "b_book.m4a"]   # deliberately unsorted
+    db_times = {                                        # naive UTC ISO, like the DB
+        "a_old.m4a": "2026-06-01T12:00:00",
+        "c_new.m4a": "2026-06-10T12:00:00",
+    }                                                   # b_book.m4a absent -> uses mtime
+    mtimes = {
+        "a_old.m4a": datetime(2026, 6, 1, 9).timestamp(),
+        "b_book.m4a": datetime(2026, 6, 5, 9).timestamp(),
+        "c_new.m4a": datetime(2026, 6, 10, 9).timestamp(),
+    }
+
+    plan = plan_episode_numbering(files, mtimes, db_times)
+
+    assert [n for n, _, _ in plan] == ["a_old.m4a", "b_book.m4a", "c_new.m4a"]
+    assert [num for _, num, _ in plan] == [1, 2, 3]
+    by_name = {n: d for n, _, d in plan}
+    # mtime branch -> deterministic local date
+    assert by_name["b_book.m4a"] == date(2026, 6, 5)
+    # DB branch -> UTC timestamp converted to local date (timezone-independent assertion)
+    expected = (datetime.fromisoformat("2026-06-01T12:00:00")
+                .replace(tzinfo=timezone.utc).astimezone().date())
+    assert by_name["a_old.m4a"] == expected
+
+
 def test_file_episode_assigns_next_number_and_today(tmp_path, monkeypatch):
     import types
     import rabbit_hole.plex as plexmod
