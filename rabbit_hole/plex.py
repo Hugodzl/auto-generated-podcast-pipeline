@@ -1,6 +1,7 @@
 import re
 import shutil
 import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -66,7 +67,8 @@ def episode_filename(ep: GeneratedEpisode, topic_bucket: str, existing: set[str]
     return candidate
 
 
-def tag_audio(path: Path, ep: GeneratedEpisode, topic_bucket: str) -> None:
+def tag_audio(path: Path, ep: GeneratedEpisode, topic_bucket: str, *,
+              track_number: int, generated_on: date) -> None:
     from mutagen import File as MutagenFile
     audio = MutagenFile(path, easy=True)
     if audio is None:
@@ -76,7 +78,8 @@ def tag_audio(path: Path, ep: GeneratedEpisode, topic_bucket: str) -> None:
     audio["album"] = ALBUM
     audio["title"] = ep.paper.title[:200]
     audio["genre"] = topic_bucket
-    audio["date"] = str(ep.paper.published_at.year)
+    audio["date"] = generated_on.isoformat()   # generation DAY (was paper year)
+    audio["tracknumber"] = str(track_number)   # ascending; newest = highest
     audio.save()
 
 
@@ -85,10 +88,11 @@ def file_episode(ep: GeneratedEpisode, topic_bucket: str, config: PlexConfig,
     target_dir = Path(config.target_folder)
     target_dir.mkdir(parents=True, exist_ok=True)
     existing = {p.name for p in target_dir.iterdir()}
+    track_number = next_track_number(target_dir)   # count files already present, before the move
     filename = episode_filename(ep, topic_bucket, existing)
     dest = target_dir / filename
     shutil.move(str(ep.audio_path), str(dest))
-    tag_audio(dest, ep, topic_bucket)
+    tag_audio(dest, ep, topic_bucket, track_number=track_number, generated_on=date.today())
     try:
         _refresh_plex(config, token)
     except Exception:  # noqa: BLE001 - refresh is best-effort; Plex rescans on its own schedule

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from rabbit_hole.notebooklm import GeneratedEpisode
@@ -57,7 +57,8 @@ def test_tag_audio_sets_album_artist_for_plex_grouping(tmp_path, monkeypatch):
     monkeypatch.setattr(mutagen, "File", lambda *a, **k: fake)
 
     ep = make_ep(tmp_path)
-    tag_audio(tmp_path / "tmp.m4a", ep, "AI studies")
+    tag_audio(tmp_path / "tmp.m4a", ep, "AI studies",
+              track_number=1, generated_on=date(2026, 6, 19))
 
     assert fake.get("albumartist") == "Hugo Déziel"
     assert fake.get("artist") == "Hugo Déziel"
@@ -177,3 +178,46 @@ def test_next_track_number_returns_max_plus_one(tmp_path, monkeypatch):
     monkeypatch.setattr(mutagen, "File", lambda p, *a, **k: tags[Path(p).name])
 
     assert next_track_number(tmp_path) == 8   # max(3,1,7,0) + 1
+
+
+def test_tag_audio_writes_tracknumber_and_generation_date(tmp_path, monkeypatch):
+    import mutagen
+    from rabbit_hole.plex import tag_audio
+
+    class FakeAudio(dict):
+        def save(self):
+            self.saved = True
+
+    fake = FakeAudio()
+    monkeypatch.setattr(mutagen, "File", lambda *a, **k: fake)
+
+    ep = make_ep(tmp_path)
+    tag_audio(tmp_path / "tmp.m4a", ep, "AI studies",
+              track_number=7, generated_on=date(2026, 6, 19))
+
+    assert fake.get("tracknumber") == "7"
+    assert fake.get("date") == "2026-06-19"   # generation day, not paper year
+
+
+def test_file_episode_assigns_next_number_and_today(tmp_path, monkeypatch):
+    import types
+    import rabbit_hole.plex as plexmod
+    from rabbit_hole.plex import file_episode
+
+    captured = {}
+
+    def fake_tag(path, ep, topic, *, track_number, generated_on):
+        captured.update(path=path, track_number=track_number, generated_on=generated_on)
+
+    monkeypatch.setattr(plexmod, "next_track_number", lambda d: 5)
+    monkeypatch.setattr(plexmod, "tag_audio", fake_tag)
+    monkeypatch.setattr(plexmod, "_refresh_plex", lambda *a, **k: None)
+
+    ep = make_ep(tmp_path)
+    cfg = types.SimpleNamespace(target_folder=str(tmp_path / "plex"))
+    dest = file_episode(ep, "AI studies", cfg, token="tok")
+
+    assert captured["track_number"] == 5
+    assert captured["generated_on"] == date.today()
+    assert captured["path"] == dest
+    assert dest.exists() and dest.parent.name == "plex"
