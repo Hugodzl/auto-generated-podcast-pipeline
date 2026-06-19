@@ -164,6 +164,29 @@ album="The Random Rabbit Hole" / artist="Hugo Déziel", so Plex groups them as
 that album. Config therefore uses `library_name = "Podcasts"` and
 `target_folder = "D:/Videos/PlexLibrary/Podcasts/The Random Rabbit Hole"`.
 
+### Track ordering and generation date
+
+Each episode file is embedded with two additional tags at filing time:
+
+- **`tracknumber`** — assigned by `next_track_number()` in `rabbit_hole/plex.py`
+  as `max(existing tracknumber on disk) + 1`. Numbers ascend in creation order,
+  so the newest episode is always the highest-numbered track. Plexamp (and Plex)
+  sort by track number, giving a deterministic oldest-first playback order.
+- **`date`** — set to the **generation day** (full ISO date, e.g. `2026-06-19`)
+  via `date.today()` at filing time. This replaces the old behavior of using the
+  source paper's publication year.
+
+**One-time backfill for episodes already in Plex:**
+
+```
+uv run python scripts/number_existing_episodes.py
+```
+
+The script is re-runnable. It orders existing files by their DB `generated_at`
+timestamp (falling back to file mtime for one-off episodes not in the DB), writes
+the `tracknumber` and generation-`date` tags, refreshes Plex, and sets each
+track's index via the Plex API as a safety net.
+
 - [ ] (Optional) For a dedicated "The Random Rabbit Hole" library instead, create
       a **Music**-type library on that exact folder and set `library_name` to it —
       but don't nest it under the Podcasts library's path, or Plex indexes twice.
