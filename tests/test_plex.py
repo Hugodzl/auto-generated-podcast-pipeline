@@ -152,3 +152,28 @@ def test_unify_albums_ignores_other_titles_and_artists():
     assert len(server.calls) == 1
     key, _ = server.calls[0]
     assert key == "/library/metadata/1933/merge?ids=2094"
+
+
+# --- next_track_number -------------------------------------------------------
+
+
+def test_next_track_number_empty_dir_returns_one(tmp_path):
+    from rabbit_hole.plex import next_track_number
+    assert next_track_number(tmp_path) == 1
+
+
+def test_next_track_number_returns_max_plus_one(tmp_path, monkeypatch):
+    import mutagen
+    from rabbit_hole.plex import next_track_number
+
+    for name in ("a.m4a", "b.m4a", "c.m4a", "d.m4a"):
+        (tmp_path / name).write_bytes(b"x")
+    tags = {
+        "a.m4a": {"tracknumber": ["3"]},
+        "b.m4a": {"tracknumber": ["1/12"]},   # "X/Y" form -> 1
+        "c.m4a": {"tracknumber": ["7"]},
+        "d.m4a": {},                            # missing tag -> counts as 0
+    }
+    monkeypatch.setattr(mutagen, "File", lambda p, *a, **k: tags[Path(p).name])
+
+    assert next_track_number(tmp_path) == 8   # max(3,1,7,0) + 1

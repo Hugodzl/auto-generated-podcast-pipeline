@@ -30,6 +30,29 @@ def sanitize(name: str) -> str:
     return ILLEGAL.sub("-", name).strip().strip("-").strip()
 
 
+def _track_int(value) -> int:
+    """First integer in an EasyMP4 tracknumber value (e.g. ['5'] or ['5/12']);
+    0 for a missing/blank/non-numeric tag."""
+    if not value:
+        return 0
+    raw = str(value[0]).split("/")[0].strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+def next_track_number(target_dir: Path) -> int:
+    """1 + the highest tracknumber already present among the album's .m4a files
+    (1 if none). Derived from what's actually on disk, so it covers pipeline,
+    rescue, and one-off (book) episodes alike and self-heals if a number drifts."""
+    from mutagen import File as MutagenFile
+    highest = 0
+    for p in target_dir.glob("*.m4a"):
+        audio = MutagenFile(p, easy=True)
+        if audio is None:
+            continue
+        highest = max(highest, _track_int(audio.get("tracknumber")))
+    return highest + 1
+
+
 def episode_filename(ep: GeneratedEpisode, topic_bucket: str, existing: set[str]) -> str:
     ext = ep.audio_path.suffix.lower()
     topic = sanitize(topic_bucket) or "Misc"
