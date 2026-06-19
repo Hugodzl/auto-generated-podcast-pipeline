@@ -45,11 +45,11 @@ PDF_PATH = ROOT / "data" / "pdfs" / "reasons-and-persons.pdf"
 KEYRING_SERVICE = "rabbit_hole"
 
 # Episode identity. file_episode() names the file "{topic} - {title}{ext}" and
-# tag_audio() uses the title + published_at.year, so this drives both the Plex
-# filename and the embedded tags.
+# tag_audio() embeds the title; the Plex `date` tag is now the generation day
+# (set automatically by file_episode), no longer the source's year.
 TITLE = "Reasons and Persons (Parfit)"
 TOPIC_BUCKET = "Philosophy"
-PUBLISHED = datetime(1984, 1, 1, tzinfo=timezone.utc)  # the book's year -> Plex date tag
+PUBLISHED = datetime(1984, 1, 1, tzinfo=timezone.utc)  # required by the item; no longer feeds the date tag
 LANGUAGE = "en"
 AUDIO_FORMAT = "deep_dive"
 AUDIO_LENGTH = "long"
