@@ -8,9 +8,12 @@ $python = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { throw "venv python not found: $python (run 'uv sync')" }
 
 $action   = New-ScheduledTaskAction -Execute $python -Argument "-m rabbit_hole.run" -WorkingDirectory $root
-$trigger  = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(24)  # placeholder; never auto-fires today
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 4)
-Register-ScheduledTask -TaskName "RabbitHoleManual" -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+# No trigger on purpose: a `-Once -At (Get-Date).AddHours(24)` placeholder is NOT
+# inert -- it leaves the task armed to RE-FIRE ~24h later and silently start a
+# duplicate pipeline run (confirmed 2026-06-19). A trigger-less task can't
+# auto-fire; Start-ScheduledTask runs it on demand right below.
+Register-ScheduledTask -TaskName "RabbitHoleManual" -Action $action -Settings $settings -Force | Out-Null
 Start-ScheduledTask    -TaskName "RabbitHoleManual"
 
 Write-Host "Detached run started (Scheduled Task 'RabbitHoleManual')."
