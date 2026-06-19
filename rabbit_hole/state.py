@@ -114,6 +114,14 @@ class State:
         )
         return [f"{bucket} - {title}" for bucket, title in cur.fetchall()]
 
+    def generated_at_by_audio_path(self) -> dict[str, str]:
+        """{audio_path: generated_at_iso} for every episode with a recorded path.
+        Used by the backfill to order existing files and source their real dates."""
+        cur = self.conn.execute(
+            "SELECT audio_path, generated_at FROM episodes WHERE audio_path IS NOT NULL"
+        )
+        return {path: ts for path, ts in cur.fetchall()}
+
     # --- pending generations (crash recovery) ---
     _PENDING_COLS = ("id", "run_id", "doi", "title", "summary", "link",
                      "source_name", "source_weight", "published_at", "pdf_path",

@@ -147,3 +147,17 @@ def test_source_health_counters(tmp_db, migrations_dir):
     assert st.failing_sources(threshold=3) == [("Nature", 3)]
     st.reset_source_failures("Nature")
     assert st.failing_sources(threshold=1) == []
+
+
+def test_generated_at_by_audio_path(tmp_db, migrations_dir):
+    st = State(tmp_db, migrations_dir)
+    st.init()
+    st.record_episode(doi=None, title_hash="h1", title="A", language="en",
+                      source_name="Nature", topic_bucket="Animals", score=1.0,
+                      pdf_path="p.pdf", audio_path="/plex/A.m4a")
+    st.record_episode(doi=None, title_hash="h2", title="B", language="en",
+                      source_name="Nature", topic_bucket="AI studies", score=1.0,
+                      pdf_path="p.pdf", audio_path="/plex/B.m4a")
+    m = st.generated_at_by_audio_path()
+    assert set(m.keys()) == {"/plex/A.m4a", "/plex/B.m4a"}
+    datetime.fromisoformat(m["/plex/A.m4a"])   # value is a parseable ISO timestamp
