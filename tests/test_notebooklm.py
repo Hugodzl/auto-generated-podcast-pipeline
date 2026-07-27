@@ -197,6 +197,36 @@ def test_run_nlm_adds_pdf_as_file_source_and_waits(tmp_path, monkeypatch):
     assert "--wait" in add
 
 
+def test_run_nlm_adds_every_source_in_a_list(tmp_path, monkeypatch):
+    # A themed episode is built from many sources, not one PDF: each gets its own
+    # `source add`, and the notebook only proceeds once all of them are ingested.
+    fake = FakeNlm()
+    _install_fake(monkeypatch, fake)
+    pdf = tmp_path / "study.pdf"
+    sources = [notebooklm.SourceRef("file", str(pdf)),
+               notebooklm.SourceRef("url", "https://example.org/article")]
+
+    notebooklm._run_nlm("nlm", sources, tmp_path / "o")
+
+    adds = [c for c in fake.calls if c[1:3] == ["source", "add"]]
+    assert len(adds) == 2
+    assert _flag_value(adds[0], "--file") == str(pdf)
+    assert _flag_value(adds[1], "--url") == "https://example.org/article"
+    assert all("--wait" in a for a in adds)
+
+
+def test_run_nlm_none_when_any_source_add_fails(tmp_path, monkeypatch):
+    # One unreachable source would silently produce an episode missing a pillar of
+    # its argument, so a failed add aborts the whole notebook.
+    fake = FakeNlm(add_rc=1)
+    _install_fake(monkeypatch, fake)
+    sources = [notebooklm.SourceRef("url", "https://a.example"),
+               notebooklm.SourceRef("url", "https://b.example")]
+
+    assert notebooklm._run_nlm("nlm", sources, tmp_path / "o") is None
+    assert fake.deleted_notebooks() == [fake.notebook_id]
+
+
 def test_run_nlm_polls_until_audio_completed(tmp_path, monkeypatch):
     fake = FakeNlm(statuses=("generating", "generating", "completed"))
     _install_fake(monkeypatch, fake)
@@ -374,6 +404,43 @@ def test_run_nlm_passes_language_to_audio_create(monkeypatch, tmp_path):
     assert out is not None
     assert audio_args[audio_args.index("--language") + 1] == "fr"
     assert audio_args[-1] == "--confirm"
+
+
+def test_generate_sources_override_replaces_paper_pdf(tmp_path, monkeypatch):
+    # The one-off topic episode has no single source PDF; it hands generate() the
+    # whole reading list, and the Paper is only carried through for tagging.
+    paper = make_paper(tmp_path)
+    audio = tmp_path / "out.m4a"
+    audio.write_bytes(b"a")
+    seen = {}
+
+    def fake_run_nlm(cmd, sources, out_dir, **kwargs):
+        seen["sources"] = sources
+        return audio
+
+    monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
+    refs = [notebooklm.SourceRef("url", "https://a.example")]
+    ep = generate(paper, NotebookLMConfig(nlm_command="nlm"), out_dir=tmp_path,
+                  sources=refs)
+
+    assert seen["sources"] == refs
+    assert ep.paper is paper
+
+
+def test_generate_without_sources_still_uses_paper_pdf(tmp_path, monkeypatch):
+    paper = make_paper(tmp_path)
+    audio = tmp_path / "out.m4a"
+    audio.write_bytes(b"a")
+    seen = {}
+
+    def fake_run_nlm(cmd, sources, out_dir, **kwargs):
+        seen["sources"] = sources
+        return audio
+
+    monkeypatch.setattr("rabbit_hole.notebooklm._run_nlm", fake_run_nlm)
+    generate(paper, NotebookLMConfig(nlm_command="nlm"), out_dir=tmp_path)
+
+    assert seen["sources"] == paper.pdf_path
 
 
 def test_generate_forwards_paper_language(monkeypatch, tmp_path):

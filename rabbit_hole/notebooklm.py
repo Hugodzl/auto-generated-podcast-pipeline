@@ -32,6 +32,34 @@ class GeneratedEpisode:
     nlm_notebook_id: str
 
 
+@dataclass(frozen=True)
+class SourceRef:
+    """One thing to feed a notebook: a local file or a public URL.
+
+    The weekly pipeline always has exactly one source (the resolved paper PDF);
+    a themed one-off episode is built from a whole reading list, so `_run_nlm`
+    takes either shape.
+    """
+    kind: str    # "file" | "url"
+    value: str
+
+    @property
+    def flag(self) -> str:
+        return "--file" if self.kind == "file" else "--url"
+
+
+def _normalize_sources(sources) -> tuple[list[SourceRef], str]:
+    """Accept a single PDF path (the pipeline's shape) or a list of SourceRefs,
+    and return the refs plus a label for the throwaway notebook's title."""
+    if isinstance(sources, (str, Path)):
+        path = Path(sources)
+        return [SourceRef("file", str(path))], path.stem
+    refs = list(sources)
+    first_file = next((r for r in refs if r.kind == "file"), None)
+    label = Path(first_file.value).stem if first_file else "topic"
+    return refs, label
+
+
 def _nlm(nlm_command: str, args: list[str], timeout: float):
     """Run one nlm subcommand. Returns the CompletedProcess, or None if the
     binary is missing or the call times out."""
@@ -114,20 +142,24 @@ def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
     return False
 
 
-def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
+def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
              audio_format: str = "deep_dive", audio_length: str = "default",
              focus: str = "", language: str = "en") -> Path | None:
-    """Generate an audio overview for one PDF via the nlm CLI.
+    """Generate an audio overview from one or more sources via the nlm CLI.
 
-    Multi-step: create a notebook, add the PDF as a source (waiting for ingest),
-    request an audio overview, poll until it completes, then download the .m4a.
-    The per-run notebook is deleted afterward. Any failure — non-zero exit,
-    timeout, missing binary, or generation never completing — returns None so
-    the orchestrator's failure budget handles them uniformly.
+    `sources` is either a single PDF path (the weekly pipeline's shape) or a list
+    of SourceRefs for a themed multi-source episode.
+
+    Multi-step: create a notebook, add each source (waiting for ingest), request
+    an audio overview, poll until it completes, then download the .m4a. The
+    per-run notebook is deleted afterward. Any failure — non-zero exit, timeout,
+    missing binary, or generation never completing — returns None so the
+    orchestrator's failure budget handles them uniformly.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    title = f"rabbit-hole {pdf_path.stem} {uuid.uuid4().hex[:8]}"
+    refs, label = _normalize_sources(sources)
+    title = f"rabbit-hole {label} {uuid.uuid4().hex[:8]}"
     notebook_id: str | None = None
     try:
         created = _nlm(nlm_command, ["notebook", "create", title], _CALL_TIMEOUT)
@@ -136,17 +168,24 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
         notebook_id = _find_notebook_id(nlm_command, title)
         if not notebook_id:
             return None
-        _log.info("nlm_notebook_created", notebook_id=notebook_id, pdf=pdf_path.name)
+        _log.info("nlm_notebook_created", notebook_id=notebook_id, sources=len(refs))
 
-        added = _nlm(
-            nlm_command,
-            ["source", "add", notebook_id, "--file", str(pdf_path),
-             "--wait", "--wait-timeout", str(_SOURCE_WAIT_TIMEOUT)],
-            _SOURCE_WAIT_TIMEOUT + _CALL_TIMEOUT,
-        )
-        if added is None or added.returncode != 0:
-            return None
-        _log.info("nlm_source_added", notebook_id=notebook_id)
+        # Added one at a time rather than as one bulk call: a bulk add reports a
+        # single exit code, so one dead link would be indistinguishable from a
+        # clean run and we'd narrate an episode missing a source.
+        for i, ref in enumerate(refs, start=1):
+            added = _nlm(
+                nlm_command,
+                ["source", "add", notebook_id, ref.flag, ref.value,
+                 "--wait", "--wait-timeout", str(_SOURCE_WAIT_TIMEOUT)],
+                _SOURCE_WAIT_TIMEOUT + _CALL_TIMEOUT,
+            )
+            if added is None or added.returncode != 0:
+                _log.error("nlm_source_add_failed", notebook_id=notebook_id,
+                           source=ref.value)
+                return None
+            _log.info("nlm_source_added", notebook_id=notebook_id,
+                      source=ref.value, index=i, total=len(refs))
 
         # --language is passed explicitly on purpose: it overrides the account /
         # NOTEBOOKLM_HL default so output language follows the paper, not the env.
@@ -183,11 +222,17 @@ def _run_nlm(nlm_command: str, pdf_path: Path, out_dir: Path, *,
 
 def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,
              audio_format: str | None = None, audio_length: str | None = None,
-             focus: str | None = None) -> GeneratedEpisode:
+             focus: str | None = None,
+             sources: list[SourceRef] | None = None) -> GeneratedEpisode:
+    """Turn a Paper into an episode. `sources` overrides the paper's own PDF for
+    themed one-offs built from a reading list; the Paper is still carried through
+    for titling and tagging."""
     fmt = audio_format if audio_format is not None else config.audio_format
     length = audio_length if audio_length is not None else config.audio_length
     foc = focus if focus is not None else config.focus
-    audio = _run_nlm(config.nlm_command, paper.pdf_path, Path(out_dir),
+    audio = _run_nlm(config.nlm_command,
+                     sources if sources is not None else paper.pdf_path,
+                     Path(out_dir),
                      audio_format=fmt, audio_length=length, focus=foc,
                      language=paper.language)
     if audio is None or not audio.exists():
