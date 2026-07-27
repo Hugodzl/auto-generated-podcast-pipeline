@@ -166,7 +166,7 @@ def _build_paper() -> Paper:
         authors=["various"],
         abstract=item.summary,
         published_at=published,
-        pdf_path=PDF_DIR / PDF_SOURCES[0],
+        pdf_path=PDF_DIR / PDF_SOURCES[0][0],
         language=LANGUAGE,
         source=item,
     )
@@ -191,6 +191,13 @@ def _preflight() -> list[str]:
     sources the reachability check matters more than in the single-PDF one-off:
     one dead link aborts the notebook after the sources ahead of it have ingested."""
     problems: list[str] = []
+    # Build the Paper here rather than only on the real path: --check previously
+    # reported OK while _build_paper() still raised, so the detached run died
+    # seconds in with the preflight's blessing.
+    try:
+        _build_paper()
+    except Exception as e:  # noqa: BLE001 - any construction failure is a blocker
+        problems.append(f"episode metadata could not be built: {e!r}")
     for name, _ in PDF_SOURCES:
         path = PDF_DIR / name
         if not path.exists():
@@ -271,7 +278,9 @@ def main() -> int:
     dest = file_episode(ep, TOPIC_BUCKET, cfg.plex, token)
     logger.info("topic_episode_filed", path=str(dest))
     post_discord(webhook, f"Rabbit Hole topic episode ready: {TITLE}\n{dest.name}")
-    print("DONE:", dest)
+    # The title carries an em dash, and a Scheduled Task's stdout is not UTF-8;
+    # the episode is already filed by here, so never let printing be what fails.
+    print("DONE:", str(dest).encode("ascii", "replace").decode("ascii"))
     return 0
 
 
