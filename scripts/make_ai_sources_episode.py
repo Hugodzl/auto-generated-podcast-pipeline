@@ -11,13 +11,21 @@ touched, so this can't collide with the weekly run's dedup or recovery.
 Modes:
   python scripts/make_ai_sources_episode.py --fetch --check   # download sources, preflight
   python scripts/make_ai_sources_episode.py --check           # preflight only, no NLM time spent
+  python scripts/make_ai_sources_episode.py --check --no-probe # skip the ~1 min nlm URL probe
   python scripts/make_ai_sources_episode.py                   # full generate + boost + file
+
+The preflight asks nlm itself whether it can ingest each URL source, because HTTP
+reachability turned out to be the wrong oracle in both directions - see
+_urls_nlm_can_ingest. The first run of this episode died four minutes in on a URL
+that answered 200 to httpx and that nlm then refused.
 
 The real run is meant to be launched DETACHED (scripts/run_ai_sources_episode_detached.ps1)
 so closing the terminal / Claude session can't kill it mid-generation.
 """
+import json
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 # This file lives in scripts/, but it imports the rabbit_hole package at the repo
@@ -147,11 +155,12 @@ URL_SOURCES = [
     "https://www.newsguardtech.com/special-reports/"
     "67-percent-of-top-news-sites-block-ai-chatbots/",
     # The Tow Center / CJR study - eight AI search tools, 1,600 queries: wrong
-    # attributions, fabricated URLs, and unwavering confidence while doing it. Read
-    # via Digital Content Next's write-up because cjr.org, niemanlab.org and
-    # towcenter.columbia.edu all 403 a plain HTTP client (so NotebookLM's fetcher
-    # would very likely hit the same wall).
-    "https://digitalcontentnext.org/blog/2025/03/24/ai-search-has-a-news-citation-problem/",
+    # attributions, fabricated URLs, and unwavering confidence while doing it.
+    # cjr.org 403s a plain httpx client but NotebookLM ingests it fine; the reverse
+    # was also true of a substitute that httpx fetched happily and nlm refused.
+    # See _urls_nlm_can_ingest below - nlm is the only oracle worth asking.
+    "https://www.cjr.org/tow_center/"
+    "we-compared-eight-ai-search-engines-theyre-all-bad-at-citing-news.php",
     # Graphite - measurement of how much new web writing is machine-written (~52% of
     # a 65k-article sample), and the caveat that publishing share != visibility share.
     "https://graphite.io/five-percent/more-articles-are-now-created-by-ai-than-humans",
@@ -290,24 +299,77 @@ def _build_paper() -> Paper:
     )
 
 
-def _url_reachable(url: str) -> bool:
-    """HEAD, falling back to a ranged GET: some hosts (news sites, CDNs) answer
-    HEAD with 403/405 while serving GET fine."""
+def _urls_nlm_can_ingest(urls: list[str]) -> tuple[list[str], str | None]:
+    """Ask nlm itself which URL sources it can actually ingest, in one throwaway
+    notebook. Returns (rejected urls, fatal error or None).
+
+    An HTTP reachability check is the wrong oracle here and wrong in BOTH
+    directions, which is why this exists (both cases observed 2026-08-11):
+      - cjr.org answers 403 to a plain httpx client, yet NotebookLM ingests it.
+      - digitalcontentnext.org answers 200 to httpx, and `nlm source add` refuses
+        it -- which killed a real run four minutes in, after 18 sources had
+        already been ingested.
+    robots.txt is not the predictor either: thebulletin.org disallows GPTBot,
+    ClaudeBot and Google-Extended outright and still ingests fine, because a
+    user-initiated NotebookLM fetch is not one of those crawlers.
+
+    Costs one notebook and ~10s per URL, spends no audio-generation time, and
+    turns a class of mid-run aborts into a preflight failure."""
+    title = f"rh-preflight {uuid.uuid4().hex[:8]}"
+    created = _nlm(["notebook", "create", title], 120)
+    if created is None or created.returncode != 0:
+        return [], "could not create the preflight probe notebook (nlm auth?)"
+    notebook_id = _find_notebook_id_local(title)
+    if not notebook_id:
+        return [], "preflight probe notebook created but its id was not found"
+    rejected: list[str] = []
     try:
-        with httpx.Client(follow_redirects=True, timeout=25) as client:
-            r = client.head(url)
-            if r.status_code >= 400:
-                r = client.get(url, headers={"Range": "bytes=0-2048"})
-            return r.status_code < 400
-    except httpx.HTTPError:
-        return False
+        for url in urls:
+            added = _nlm(["source", "add", notebook_id, "--url", url,
+                          "--wait", "--wait-timeout", "120"], 200)
+            if added is None or added.returncode != 0:
+                rejected.append(url)
+    finally:
+        _nlm(["notebook", "delete", notebook_id, "--confirm"], 120)
+    return rejected, None
 
 
-def _preflight() -> list[str]:
+def _nlm(args: list[str], timeout: float):
+    """Run one nlm subcommand; None if the binary is missing or the call times out."""
+    try:
+        return subprocess.run(
+            ["nlm", *args], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _find_notebook_id_local(title: str) -> str | None:
+    r = _nlm(["list", "notebooks", "--json"], 120)
+    if r is None or r.returncode != 0:
+        return None
+    try:
+        notebooks = json.loads(r.stdout)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(notebooks, list):
+        return None
+    matches = [n for n in notebooks if n.get("title") == title and n.get("id")]
+    matches.sort(key=lambda n: n.get("updated_at", ""), reverse=True)
+    return matches[0]["id"] if matches else None
+
+
+def _preflight(probe_urls: bool = True) -> list[str]:
     """Return human-readable blockers; empty list means good to go. Catches the
     cheap-to-detect failures before we commit ~40 min of NotebookLM time. With 22
-    sources the reachability check matters: one dead link aborts the notebook after
-    the sources ahead of it have already ingested."""
+    sources the URL check matters most: one source nlm won't take aborts the whole
+    notebook after everything ahead of it has already ingested, which is exactly
+    how the first run of this episode died.
+
+    Cheap local checks run first; the ~1 min nlm URL probe runs last and only if
+    the CLI is authenticated, since without auth every probe would fail anyway.
+    Pass probe_urls=False to skip it (local-only sanity check)."""
     problems: list[str] = []
     # Build the Paper here rather than only on the real path: --check once reported
     # OK while _build_paper() still raised, so a detached run died seconds in with
@@ -322,9 +384,6 @@ def _preflight() -> list[str]:
             problems.append(f"source PDF not found: {path}")
         elif path.stat().st_size < 10_000:
             problems.append(f"source PDF suspiciously small ({path.stat().st_size} B): {path}")
-    for url in URL_SOURCES:
-        if not _url_reachable(url):
-            problems.append(f"source URL unreachable: {url}")
     for tool in ("ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
             problems.append(f"{tool} not on PATH (needed for the +40% loudness boost)")
@@ -332,16 +391,20 @@ def _preflight() -> list[str]:
         problems.append("Plex token missing from keyring (service 'rabbit_hole', key 'plex_token')")
     # Functional nlm check: proves the CLI is present AND the login is still valid,
     # which is the failure that would otherwise surface only at notebook-create.
-    try:
-        r = subprocess.run(
-            ["nlm", "list", "notebooks", "--json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=60,
-        )
-        if r.returncode != 0:
-            problems.append("nlm CLI failed `list notebooks` -- not authenticated? (try: nlm login)")
-    except (OSError, subprocess.TimeoutExpired):
+    r = _nlm(["list", "notebooks", "--json"], 60)
+    if r is None:
         problems.append("nlm CLI not runnable on PATH")
+        return problems
+    if r.returncode != 0:
+        problems.append("nlm CLI failed `list notebooks` -- not authenticated? (try: nlm login)")
+        return problems
+
+    if probe_urls and URL_SOURCES:
+        rejected, fatal = _urls_nlm_can_ingest(URL_SOURCES)
+        if fatal:
+            problems.append(fatal)
+        for url in rejected:
+            problems.append(f"nlm refuses to ingest this URL source (swap it): {url}")
     return problems
 
 
@@ -355,7 +418,7 @@ def main() -> int:
     if "--fetch" in args:
         print(f"fetched {_fetch_missing_pdfs()} missing source PDF(s).")
 
-    problems = _preflight()
+    problems = _preflight(probe_urls="--no-probe" not in args)
     if problems:
         for p in problems:
             logger.error("ai_sources_episode_preflight_problem", problem=p)
