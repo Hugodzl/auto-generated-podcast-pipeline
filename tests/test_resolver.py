@@ -819,3 +819,15 @@ def test_detect_language_falls_back_to_en_on_undetectable_text():
     # Symbol-only text raises LangDetectException internally -> "en" fallback,
     # which downstream becomes NLM's --language en.
     assert detect_language("42 :: ???") == "en"
+
+
+def test_paper_from_link_builds_a_paper_with_no_pdf():
+    """A URL-sourced item skips the whole PDF cascade: NotebookLM reads the page."""
+    item = make_item(link="https://aeon.co/essays/x", title="An essay",
+                     summary="On knowing and not knowing.")
+    paper = resolver.paper_from_link(item)
+    assert paper.pdf_path is None
+    assert paper.title == "An essay"
+    assert paper.abstract == "On knowing and not knowing."
+    assert paper.language == "en"
+    assert paper.source is item

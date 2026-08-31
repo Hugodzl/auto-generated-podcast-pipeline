@@ -20,6 +20,7 @@ class FeedItem:
     link: str
     published_at: datetime
     raw: dict = field(default_factory=dict)
+    url_source: bool = False   # feed the link to NotebookLM instead of resolving a PDF
 
 
 def _parse_date(entry) -> datetime:
@@ -41,6 +42,7 @@ def parse_feed(source: SourceConfig, body: str) -> list[FeedItem]:
                 link=entry.get("link", "").strip(),
                 published_at=_parse_date(entry),
                 raw=dict(entry),
+                url_source=source.url_source,
             )
         )
     return items

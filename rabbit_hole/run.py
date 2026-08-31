@@ -8,11 +8,12 @@ from rabbit_hole.config import Config, load_config
 from rabbit_hole.lockfile import PipelineLockError, acquire_lock
 from rabbit_hole.logging_config import configure_logging, post_discord
 from rabbit_hole.audio import AudioBoostError, boost_loudness
-from rabbit_hole.notebooklm import GeneratedEpisode, NotebookLMError, generate
+from rabbit_hole.notebooklm import (GeneratedEpisode, NotebookLMError, SourceRef, generate,
+                                    nlm_label)
 from rabbit_hole.plex import file_episode
 from rabbit_hole.ranker import interleave_topics, rank
 from rabbit_hole.recovery import recover_orphans
-from rabbit_hole.resolver import resolve, extract_doi
+from rabbit_hole.resolver import extract_doi, paper_from_link, resolve
 from rabbit_hole.sources import poll_all
 from rabbit_hole.state import State, hash_str
 
@@ -65,7 +66,8 @@ def _publish(ep: GeneratedEpisode, topic_bucket: str, score: float, cfg: Config,
         doi=paper.doi, title_hash=hash_str(paper.title), title=paper.title,
         language=paper.language, source_name=paper.source.source_name,
         topic_bucket=topic_bucket, score=score,
-        pdf_path=str(paper.pdf_path), audio_path=str(dest), run_id=run_id,
+        pdf_path=str(paper.pdf_path) if paper.pdf_path else None,
+        audio_path=str(dest), run_id=run_id,
     )
     logger.info("filed", title=paper.title, path=str(dest))
 
@@ -108,21 +110,32 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
     for s in ranked:
         if generated >= target:
             break
-        paper = resolve(s.item, cfg.apis, state, pdf_dir=pdf_dir)
-        if paper is None:
-            # No PDF found for this item. Neutral: not an nlm failure, so the
-            # consecutive-failure budget is untouched. Advance to the next candidate.
-            logger.info("resolve_skipped", title=s.item.title)
-            continue
+        if s.item.url_source:
+            # A magazine/essay/encyclopedia feed: there is no PDF to find, and
+            # NotebookLM ingests the article page itself. Skipping resolve() is
+            # what makes these topics reachable at all -- the cascade is
+            # DOI/preprint-shaped and returns None for every one of them.
+            paper = paper_from_link(s.item)
+            sources = [SourceRef("url", s.item.link)]
+        else:
+            paper = resolve(s.item, cfg.apis, state, pdf_dir=pdf_dir)
+            sources = None
+            if paper is None:
+                # No PDF found for this item. Neutral: not an nlm failure, so the
+                # consecutive-failure budget is untouched. Advance to the next candidate.
+                logger.info("resolve_skipped", title=s.item.title)
+                continue
         pending_id = state.add_pending(
             run_id=run_id, doi=paper.doi, title=paper.title, summary=paper.abstract,
             link=paper.source.link, source_name=paper.source.source_name,
             source_weight=paper.source.source_weight,
-            published_at=paper.published_at.isoformat(), pdf_path=str(paper.pdf_path),
+            published_at=paper.published_at.isoformat(),
+            pdf_path=str(paper.pdf_path) if paper.pdf_path else None,
             language=paper.language, topic_bucket=s.topic_bucket, score=s.score,
         )
         try:
-            ep = generate(paper, cfg.notebooklm, out_dir=audio_dir)
+            ep = generate(paper, cfg.notebooklm, out_dir=audio_dir, sources=sources,
+                          label=nlm_label(paper.pdf_path, paper.source.link))
         except NotebookLMError as e:
             # A clean nlm failure already deleted its notebook (finally block in
             # _run_nlm) — the snapshot would only confuse recovery. Drop it.

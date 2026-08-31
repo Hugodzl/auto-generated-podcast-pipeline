@@ -147,3 +147,41 @@ def test_ranking_topic_round_robin_defaults_true(tmp_path):
     assert RankingConfig(recency_half_life_days=30).topic_round_robin is True
     assert RankingConfig(recency_half_life_days=30,
                          topic_round_robin=False).topic_round_robin is False
+
+
+# --------------------------------------------------------------------------
+# The shipped config, not a fixture: these are the miscategorisations that
+# actually reached Plex, and the keyword lists are the only thing preventing them.
+# --------------------------------------------------------------------------
+
+REPO_CONFIG = Path(__file__).parent.parent / "config" / "config.toml"
+
+
+def _bucket(title, summary):
+    from datetime import datetime, timezone
+
+    from rabbit_hole.ranker import score_item
+    from rabbit_hole.sources import FeedItem
+
+    cfg = load_config(REPO_CONFIG)
+    item = FeedItem(source_name="S", source_weight=1.0, title=title, summary=summary,
+                    link="http://x", published_at=datetime.now(timezone.utc))
+    return score_item(item, cfg.topics, cfg.ranking).topic_bucket
+
+
+def test_a_coupled_dynamics_paper_is_not_a_relationships_episode():
+    # Episode 8 shipped as "Human relationships and psychology - An astro-neural-field
+    # model with application to cortical spreading depolarization".
+    assert _bucket("An astro-neural-field model with application to cortical spreading depolarization",
+                   "The potential variables are coupled to a third state variable for "
+                   "astrocytic K+ uptake.") != "Human relationships and psychology"
+
+
+def test_sequence_alignment_is_not_an_ai_studies_episode():
+    assert _bucket("Multiple sequence alignment of the chloroplast genome",
+                   "We report a whole-genome alignment across 40 taxa.") != "AI studies"
+
+
+def test_the_tool_used_in_a_study_is_not_animal_tool_use():
+    assert _bucket("A mass spectrometry workflow for soil samples",
+                   "We describe the tool used to quantify each fraction.") != "Animal behavior and cognition"

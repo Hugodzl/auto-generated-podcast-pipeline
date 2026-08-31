@@ -132,3 +132,15 @@ def test_poll_all_leaves_disabled_source_health_untouched(tmp_path, monkeypatch)
     assert list(poll_all(cfg, st, logger=log)) == []
     assert log.events == []                               # no source_polled for a skip
     assert st.failing_sources(threshold=1) == [("Off", 1)]  # counter NOT reset
+
+
+def test_parse_feed_marks_items_from_a_url_sourced_feed():
+    """Magazine/encyclopedia feeds have no PDF to resolve: their items are handed
+    to NotebookLM as URLs, and the flag has to survive the feed -> item hop."""
+    src = SourceConfig(name="Aeon", type="rss", url="http://x", weight=1.0, url_source=True)
+    assert parse_feed(src, SAMPLE_RSS)[0].url_source is True
+
+
+def test_parse_feed_items_resolve_to_a_pdf_by_default():
+    src = SourceConfig(name="Nature", type="rss", url="http://x", weight=1.0)
+    assert parse_feed(src, SAMPLE_RSS)[0].url_source is False

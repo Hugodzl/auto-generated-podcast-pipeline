@@ -113,3 +113,31 @@ def test_unreachable_nlm_changes_nothing(tmp_path, monkeypatch):
     got = recovery.recover_orphans("nlm", st, tmp_path, _NullLog())
     assert got == []
     assert len(st.list_pending()) == 1   # nothing purged while nlm is unreachable
+
+
+def test_adopts_an_orphan_generated_from_a_url_source(tmp_path, monkeypatch):
+    """A url-sourced pending row has no pdf_path to key on, so recovery matches
+    the notebook label the run used: the hash of the item link."""
+    from rabbit_hole.state import hash_str
+
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    link = "https://aeon.co/essays/whales"
+    pid = st.add_pending(
+        run_id=1, doi=None, title="Whale essay", summary="essay", link=link,
+        source_name="Aeon", source_weight=0.8,
+        published_at="2026-08-30T03:05:42+00:00", pdf_path=None, language="en",
+        topic_bucket="Technology and society", score=1.5,
+    )
+    monkeypatch.setattr(recovery, "_nlm_json", lambda cmd, args, t:
+        [{"id": "nb1", "title": f"rabbit-hole {hash_str(link)} deadbeef"}]
+        if args[:2] == ["list", "notebooks"]
+        else [{"type": "audio", "status": "completed", "id": "a1"}])
+    monkeypatch.setattr(recovery, "_nlm", lambda cmd, args, t: None)
+    monkeypatch.setattr(recovery, "_download_audio",
+                        lambda cmd, nb, art, out: out.write_bytes(b"x") or True)
+
+    got = recovery.recover_orphans("nlm", st, tmp_path, _NullLog())
+    assert len(got) == 1
+    assert got[0].pending_id == pid
+    assert got[0].episode.paper.pdf_path is None

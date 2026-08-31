@@ -1,30 +1,67 @@
 [schedule]
 cron = "0 7 * * MON"            # Monday 07:00 local
-episodes_per_run = 5
+episodes_per_run = 3
 
 [ranking]
 recency_half_life_days = 30
 topic_round_robin = true   # cycle topics when filling episode slots (diversity)
 
+# Keywords are matched as whole words with an optional plural (see ranker._keyword_re),
+# so "couples" no longer fires on "coupled" and "tool use" no longer fires on "tool
+# used". Phrases still beat single words: a bare "alignment" matched every
+# sequence-alignment paper in the biology feeds, hence "AI alignment" below.
+
 [[topics]]
 name = "AI studies"
 weight = 1.0
 keywords = ["large language model", "neural network", "reinforcement learning",
-            "transformer", "interpretability", "alignment", "emergent behavior",
+            "transformer", "interpretability", "AI alignment", "emergent behavior",
             "machine learning", "deep learning", "foundation model"]
 
 [[topics]]
 name = "Animal behavior and cognition"
 weight = 1.0
-keywords = ["animal cognition", "comparative cognition", "primate", "cetacean",
-            "whale", "corvid", "animal communication", "social behavior",
-            "tool use", "vocal learning"]
+keywords = ["animal cognition", "comparative cognition", "primate cognition",
+            "primate behaviour", "primate behavior", "chimpanzee", "bonobo",
+            "cetacean", "whale", "dolphin", "corvid", "songbird", "elephant",
+            "octopus", "animal communication", "social behavior", "tool use",
+            "vocal learning"]
 
 [[topics]]
 name = "Human relationships and psychology"
 weight = 1.0
-keywords = ["attachment", "romantic relationship", "couple", "social psychology",
-            "affective", "intimacy", "partner", "emotion regulation"]
+keywords = ["attachment style", "attachment theory", "romantic relationship",
+            "romantic partner", "marriage", "friendship", "social psychology",
+            "affective", "intimacy", "loneliness", "emotion regulation",
+            "social connection", "social support",
+            # plainer words so the essay feeds (Psyche, Aeon) can reach this bucket:
+            # their titles say "self-esteem", never "emotion regulation".
+            "wellbeing", "well-being", "grief", "anxiety", "self-esteem", "empathy",
+            "forgiveness", "parenting"]
+
+# The two buckets every hand-built one-off has landed in (recommender systems,
+# where AI answers get their sources, the knowledge-system essay, Parfit, Pieper)
+# and that the rules could not select before: the AI keywords above are all model
+# internals, and nothing here resolves to an open-access PDF.
+[[topics]]
+name = "Technology and society"
+weight = 1.0
+keywords = ["recommender system", "recommendation algorithm", "algorithmic curation",
+            "content moderation", "misinformation", "platform governance",
+            "attention economy", "information ecosystem", "search engine",
+            "surveillance capitalism", "mass surveillance", "algorithmic accountability",
+            "AI governance", "data governance", "digital divide", "public discourse",
+            "content provenance", "digital labour", "digital labor", "AI policy",
+            # same reason: Noema and Aeon write "social media", not "platform governance".
+            "social media", "chatbot", "big tech", "digital technology"]
+
+[[topics]]
+name = "Philosophy"
+weight = 1.0
+keywords = ["personal identity", "free will", "consciousness", "moral philosophy",
+            "metaphysics", "epistemology", "phenomenology", "philosophy of mind",
+            "normative ethics", "applied ethics", "utilitarian", "virtue ethics",
+            "existential", "metaethics", "moral realism"]
 
 [[sources]]
 name = "Nature"
@@ -68,23 +105,41 @@ type = "rss"
 url = "https://feeds.arstechnica.com/arstechnica/science"
 weight = 0.8
 
+# arXiv AI dropped 0.7 -> 0.6: cs.AI/LG/CL are 6,137 of the 8,809 items this
+# pipeline has ever ingested (70%), and their abstracts hit 4-6 AI keywords each,
+# so they took 7 of the first 8 episodes. The real diversity fix is round-robin at
+# 3 episodes/run; this just stops them leading every cycle.
 [[sources]]
 name = "arXiv cs.AI"
 type = "rss"
 url = "http://export.arxiv.org/rss/cs.AI"
-weight = 0.7
+weight = 0.6
 
 [[sources]]
 name = "arXiv cs.LG"
 type = "rss"
 url = "http://export.arxiv.org/rss/cs.LG"
-weight = 0.7
+weight = 0.6
 
 [[sources]]
 name = "arXiv cs.CL"
 type = "rss"
 url = "http://export.arxiv.org/rss/cs.CL"
-weight = 0.7
+weight = 0.6
+
+# Computers-and-Society and HCI: the peer-reviewed half of "Technology and
+# society", and unlike the magazines below these resolve to a real PDF.
+[[sources]]
+name = "arXiv cs.CY"
+type = "rss"
+url = "http://export.arxiv.org/rss/cs.CY"
+weight = 0.6
+
+[[sources]]
+name = "arXiv cs.HC"
+type = "rss"
+url = "http://export.arxiv.org/rss/cs.HC"
+weight = 0.5
 
 [[sources]]
 name = "bioRxiv animal behavior"
@@ -103,6 +158,45 @@ name = "PsyArXiv"
 type = "rss"
 url = "https://share.osf.io/api/v2/feeds/atom/?q=psyarxiv"
 weight = 0.6
+
+# url_source feeds: essays and encyclopedia entries, with no DOI and no
+# open-access PDF, so resolve() would return None for every item. Their links go
+# straight to NotebookLM, which was verified to ingest a live article from each
+# of these five on 2026-08-31 (nlm source add --url, via oneoff.urls_nlm_can_ingest).
+[[sources]]
+name = "Aeon"
+type = "rss"
+url = "https://aeon.co/feed.rss"
+weight = 0.9
+url_source = true
+
+[[sources]]
+name = "Psyche"
+type = "rss"
+url = "https://psyche.co/feed.rss"
+weight = 0.85
+url_source = true
+
+[[sources]]
+name = "Noema"
+type = "rss"
+url = "https://www.noemamag.com/feed/"
+weight = 0.9
+url_source = true
+
+[[sources]]
+name = "Nautilus"
+type = "rss"
+url = "https://nautil.us/feed/"
+weight = 0.85
+url_source = true
+
+[[sources]]
+name = "Stanford Encyclopedia of Philosophy"
+type = "rss"
+url = "https://plato.stanford.edu/rss/sep.xml"
+weight = 0.9
+url_source = true
 
 [notebooklm]
 nlm_command = "nlm"

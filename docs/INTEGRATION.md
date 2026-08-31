@@ -231,17 +231,16 @@ arXiv/bioRxiv/HAL/Crossref to widen coverage.
 
 ## 8. Schedule the weekly run
 
-Set `episodes_per_run = 5` in `config/config.toml`, then register the task
-(Monday 07:00 local):
+Set `episodes_per_run` (>= 3, so `topic_round_robin` actually cycles topics)
+in `config/config.toml`, then register the task (Monday 07:00 local):
 
 ```
-schtasks /Create /TN "RabbitHole" /SC WEEKLY /D MON /ST 07:00 ^
-  /TR "\"%CD%\.venv\Scripts\pythonw.exe\" -m rabbit_hole.run" ^
-  /RU %USERNAME%
+powershell -File scripts\register_weekly_task.ps1
 ```
 
-- [ ] In Task Scheduler, set the task's **"Start in"** field to the project
-      directory so relative `config/`, `data/`, and `logs/` paths resolve.
+- [ ] The script sets the task's working directory to the project root, so the
+      relative `config/`, `data/`, and `logs/` paths resolve. Registering by hand
+      with `schtasks /TR` does not, and the run dies on a missing config.
 - [ ] Run the task once manually from Task Scheduler to confirm it works under
       the scheduled context (not just your interactive shell).
 

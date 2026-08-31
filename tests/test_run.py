@@ -133,7 +133,7 @@ def test_run_pipeline_does_not_abort_on_nonconsecutive_failures(tmp_path, monkey
     # Pattern F F S F F S F F : 6 failures, 2 successes, max 2 consecutive failures.
     outcomes = iter([False, False, True, False, False, True, False, False])
 
-    def fake_generate(paper, cfg_, out_dir):
+    def fake_generate(paper, cfg_, out_dir, **kw):
         if next(outcomes):
             return _ep(paper, tmp_path)
         raise NotebookLMError("boom")
@@ -457,3 +457,46 @@ def test_run_pipeline_adopts_orphans_before_polling(tmp_path, monkeypatch):
     assert filed == ["Recovered whale"]
     assert st.list_pending() == []
     assert st.episode_titles_for_run(run_id) == ["Animals - Recovered whale"]
+
+
+def _url_item(title, link, summary="whale communication"):
+    """An item from a magazine feed: no PDF to resolve, NotebookLM reads the page."""
+    item = _item(title, link, summary)
+    item.url_source = True
+    return item
+
+
+def test_run_pipeline_hands_a_url_sourced_item_to_nlm_as_a_url(tmp_path, monkeypatch):
+    import sqlite3
+    from rabbit_hole.notebooklm import nlm_label
+
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config()
+    item = _url_item("Whale essay", "https://aeon.co/essays/whales")
+
+    def _no_resolve(*a, **k):
+        raise AssertionError("a url-sourced item must never enter the PDF cascade")
+
+    seen = {}
+
+    def _fake_generate(paper, nlm_cfg, out_dir, **kw):
+        seen["paper"] = paper
+        seen["sources"] = kw.get("sources")
+        seen["label"] = kw.get("label")
+        return _ep(paper, tmp_path)
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", _no_resolve)
+    monkeypatch.setattr("rabbit_hole.run.generate", _fake_generate)
+    monkeypatch.setattr("rabbit_hole.run.file_episode",
+                        lambda e, bucket, plexcfg, token: tmp_path / "f.m4a")
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    count = run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+    assert count == 1
+    assert [(r.kind, r.value) for r in seen["sources"]] == [("url", "https://aeon.co/essays/whales")]
+    assert seen["paper"].pdf_path is None
+    assert seen["label"] == nlm_label(None, "https://aeon.co/essays/whales")
+    con = sqlite3.connect(tmp_path / "state.db")
+    assert con.execute("select pdf_path from episodes").fetchone()[0] is None

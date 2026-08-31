@@ -30,6 +30,10 @@ class SourceConfig(BaseModel):
     url: str
     weight: float = Field(ge=0)
     enabled: bool = True
+    # Magazine / essay / encyclopedia feeds publish no DOI and no open-access
+    # PDF, so their items are handed to NotebookLM as URLs instead of going
+    # through the resolve cascade (which would drop every one of them).
+    url_source: bool = False
 
 
 class NotebookLMConfig(BaseModel):

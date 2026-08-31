@@ -70,19 +70,19 @@ focus brief.
 
 ## Scheduling (Windows Task Scheduler)
 
-Create a weekly task, Monday 07:00:
+Create (or replace) the weekly task, Monday 07:00:
 
 ```
-schtasks /Create /TN "RabbitHole" /SC WEEKLY /D MON /ST 07:00 ^
-  /TR "\"%CD%\.venv\Scripts\pythonw.exe\" -m rabbit_hole.run" ^
-  /RU %USERNAME%
+powershell -File scripts\register_weekly_task.ps1
 ```
 
-Set "Start in" to the project directory so relative `config/` and `data/` paths resolve.
+It sets `-WorkingDirectory` to the project root, so relative `config/`, `data/`
+and `logs/` paths resolve; `schtasks /TR "%CD%\..."` does not, and the task then
+fails to find the config. Task name: `RabbitHoleWeekly`.
 
 ## Confirmed config (v1)
 
-- Schedule: Monday 07:00, 5 episodes/run
+- Schedule: Monday 07:00, 3 episodes/run (>=3 or `topic_round_robin` can't cycle)
 - Ranking: source_weight x topic_score x recency (30-day half-life)
 - Episode filenames: `{topic} - {title}.{ext}`
 - Bilingual EN/FR, best-score-wins regardless of language

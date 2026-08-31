@@ -87,7 +87,7 @@ class Paper:
     authors: list[str]
     abstract: str
     published_at: datetime
-    pdf_path: Path
+    pdf_path: Path | None      # None for a url-sourced item: NotebookLM reads the page
     language: str
     source: FeedItem
 
@@ -309,6 +309,25 @@ def _candidate_pdf_urls(item: FeedItem, doi: str | None, apis: ApisConfig,
     url = hal_pdf_url(item.title, state)
     if url:
         yield url
+
+
+def paper_from_link(item: FeedItem) -> Paper:
+    """Build a Paper for an item NotebookLM will read straight off the web.
+
+    Magazine, essay and encyclopedia feeds carry no DOI and no open-access PDF,
+    so resolve() would return None for every one of them. Skip the cascade:
+    pdf_path stays None and the orchestrator passes the article URL to nlm.
+    """
+    return Paper(
+        doi=extract_doi(item),
+        title=item.title,
+        authors=[],
+        abstract=item.summary or "",
+        published_at=item.published_at,
+        pdf_path=None,
+        language=detect_language(f"{item.title} {item.summary}".strip()),
+        source=item,
+    )
 
 
 def resolve(item: FeedItem, apis: ApisConfig, state: State, pdf_dir: Path) -> Paper | None:

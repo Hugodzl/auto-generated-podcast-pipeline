@@ -16,6 +16,7 @@ from rabbit_hole.notebooklm import (
     _download_audio,
     _nlm,
     _nlm_json,
+    nlm_label,
 )
 from rabbit_hole.resolver import Paper
 from rabbit_hole.sources import FeedItem
@@ -47,7 +48,8 @@ def _paper_from_pending(row: dict) -> Paper:
     )
     return Paper(doi=row["doi"], title=row["title"], authors=[],
                  abstract=row["summary"] or "", published_at=item.published_at,
-                 pdf_path=Path(row["pdf_path"]), language=row["language"],
+                 pdf_path=Path(row["pdf_path"]) if row["pdf_path"] else None,
+                 language=row["language"],
                  source=item)
 
 
@@ -65,7 +67,8 @@ def recover_orphans(nlm_command: str, state: State, audio_dir: Path,
     notebooks = _nlm_json(nlm_command, ["list", "notebooks", "--json"], _CALL_TIMEOUT)
     if not isinstance(notebooks, list):
         return []  # nlm unreachable: change nothing, retry next run
-    pending_by_stem = {Path(row["pdf_path"]).stem: row for row in state.list_pending()}
+    pending_by_label = {nlm_label(row["pdf_path"], row["link"]): row
+                        for row in state.list_pending()}
     recovered: list[RecoveredEpisode] = []
     matched_ids: set[int] = set()
 
@@ -74,7 +77,7 @@ def recover_orphans(nlm_command: str, state: State, audio_dir: Path,
         if not nb_id or not title.startswith(_PREFIX):
             continue
         parts = title.split()
-        row = pending_by_stem.get(parts[1]) if len(parts) >= 2 else None
+        row = pending_by_label.get(parts[1]) if len(parts) >= 2 else None
         if row is None:
             logger.warning("orphan_deleted", notebook_id=nb_id, title=title)
             _delete_notebook(nlm_command, nb_id)
@@ -97,7 +100,7 @@ def recover_orphans(nlm_command: str, state: State, audio_dir: Path,
         logger.info("orphan_adopted", notebook_id=nb_id, title=row["title"])
         _delete_notebook(nlm_command, nb_id)
 
-    for row in pending_by_stem.values():
+    for row in pending_by_label.values():
         if row["id"] not in matched_ids:
             logger.warning("pending_purged", title=row["title"])
             state.delete_pending(row["id"])

@@ -316,7 +316,7 @@ def test_generate_passes_config_audio_params_to_run_nlm(tmp_path, monkeypatch):
     audio.write_bytes(b"a")
     captured = {}
 
-    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus, language):
+    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus, language, label=None):
         captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus,
                         language=language)
         return audio
@@ -334,7 +334,7 @@ def test_generate_override_takes_precedence_over_config(tmp_path, monkeypatch):
     audio.write_bytes(b"a")
     captured = {}
 
-    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus, language):
+    def fake_run_nlm(cmd, pdf_path, out_dir, *, audio_format, audio_length, focus, language, label=None):
         captured.update(audio_format=audio_format, audio_length=audio_length, focus=focus,
                         language=language)
         return audio
@@ -446,7 +446,7 @@ def test_generate_without_sources_still_uses_paper_pdf(tmp_path, monkeypatch):
 def test_generate_forwards_paper_language(monkeypatch, tmp_path):
     seen = {}
 
-    def fake_run_nlm(cmd, pdf, out_dir, *, audio_format, audio_length, focus, language):
+    def fake_run_nlm(cmd, pdf, out_dir, *, audio_format, audio_length, focus, language, label=None):
         seen["language"] = language
         out = Path(out_dir) / "x.m4a"
         out.write_bytes(b"x")
@@ -460,3 +460,23 @@ def test_generate_forwards_paper_language(monkeypatch, tmp_path):
                   language="fr", source=item)
     notebooklm.generate(paper, NotebookLMConfig(nlm_command="nlm"), tmp_path)
     assert seen["language"] == "fr"
+
+
+def test_nlm_label_uses_the_pdf_stem_when_there_is_one():
+    assert notebooklm.nlm_label("data/pdfs/c439.pdf", "http://x/1") == "c439"
+
+
+def test_nlm_label_falls_back_to_the_link_hash_for_a_url_source():
+    from rabbit_hole.state import hash_str
+    assert notebooklm.nlm_label(None, "http://x/1") == hash_str("http://x/1")
+
+
+def test_run_nlm_uses_an_explicit_label_in_the_notebook_title(tmp_path, monkeypatch):
+    """Recovery finds an orphaned notebook by the label in its title, so a
+    URL-sourced run has to be able to set that label itself."""
+    fake = FakeNlm()
+    _install_fake(monkeypatch, fake)
+    notebooklm._run_nlm("nlm", [notebooklm.SourceRef("url", "http://x/essay")],
+                        tmp_path, label="abc123")
+    create = next(c for c in fake.calls if c[1:3] == ["notebook", "create"])
+    assert create[3].startswith("rabbit-hole abc123 ")

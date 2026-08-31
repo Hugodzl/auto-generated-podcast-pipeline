@@ -9,6 +9,7 @@ import structlog
 
 from rabbit_hole.config import NotebookLMConfig
 from rabbit_hole.resolver import Paper
+from rabbit_hole.state import hash_str
 
 _CALL_TIMEOUT = 120            # seconds for a single non-waiting nlm call
 _SOURCE_WAIT_TIMEOUT = 600     # seconds to wait for PDF ingest (`source add --wait`)
@@ -58,6 +59,17 @@ def _normalize_sources(sources) -> tuple[list[SourceRef], str]:
     first_file = next((r for r in refs if r.kind == "file"), None)
     label = Path(first_file.value).stem if first_file else "topic"
     return refs, label
+
+
+def nlm_label(pdf_path: str | Path | None, link: str) -> str:
+    """The token in a notebook title that ties a running generation back to its
+    pending_generations row, so recovery can adopt an orphan after a crash.
+
+    A PDF-backed run uses the file stem (what _normalize_sources derives on its
+    own); a url-sourced run has no file, so it uses the hash of the link -- the
+    same name resolve() gives a PDF it cannot key by DOI.
+    """
+    return Path(pdf_path).stem if pdf_path else hash_str(link)
 
 
 def _nlm(nlm_command: str, args: list[str], timeout: float):
@@ -144,7 +156,8 @@ def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
 
 def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
              audio_format: str = "deep_dive", audio_length: str = "default",
-             focus: str = "", language: str = "en") -> Path | None:
+             focus: str = "", language: str = "en",
+             label: str | None = None) -> Path | None:
     """Generate an audio overview from one or more sources via the nlm CLI.
 
     `sources` is either a single PDF path (the weekly pipeline's shape) or a list
@@ -158,8 +171,8 @@ def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    refs, label = _normalize_sources(sources)
-    title = f"rabbit-hole {label} {uuid.uuid4().hex[:8]}"
+    refs, derived_label = _normalize_sources(sources)
+    title = f"rabbit-hole {label or derived_label} {uuid.uuid4().hex[:8]}"
     notebook_id: str | None = None
     try:
         created = _nlm(nlm_command, ["notebook", "create", title], _CALL_TIMEOUT)
@@ -223,7 +236,8 @@ def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
 def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,
              audio_format: str | None = None, audio_length: str | None = None,
              focus: str | None = None,
-             sources: list[SourceRef] | None = None) -> GeneratedEpisode:
+             sources: list[SourceRef] | None = None,
+             label: str | None = None) -> GeneratedEpisode:
     """Turn a Paper into an episode. `sources` overrides the paper's own PDF for
     themed one-offs built from a reading list; the Paper is still carried through
     for titling and tagging."""
@@ -234,7 +248,7 @@ def generate(paper: Paper, config: NotebookLMConfig, out_dir: Path, *,
                      sources if sources is not None else paper.pdf_path,
                      Path(out_dir),
                      audio_format=fmt, audio_length=length, focus=foc,
-                     language=paper.language)
+                     language=paper.language, label=label)
     if audio is None or not audio.exists():
         raise NotebookLMError(f"nlm produced no audio for {paper.title!r}")
     return GeneratedEpisode(

@@ -82,3 +82,45 @@ def test_interleave_single_topic_is_identity():
 
 def test_interleave_empty():
     assert interleave_topics([]) == []
+
+
+def test_keyword_hits_ignores_a_keyword_buried_inside_a_longer_word():
+    # Episode 8 shipped as "Human relationships and psychology" because a paper on
+    # potassium dynamics says "coupled" ten times and "couple" is a psych keyword.
+    assert keyword_hits("a nonlinear term coupled to astrocyte dynamics", ["couple"]) == 0
+    assert keyword_hits("we describe the tool used in the study", ["tool use"]) == 0
+    assert keyword_hits("the attachments were removed", ["attachment"]) == 1  # plural still counts
+
+
+def test_keyword_hits_still_matches_plural_forms():
+    assert keyword_hits("sperm whales sing", ["whale"]) == 1
+    assert keyword_hits("two transformers were trained", ["transformer"]) == 1
+    assert keyword_hits("romantic relationships in adulthood", ["romantic relationship"]) == 1
+
+
+def test_coupled_dynamics_paper_does_not_land_in_the_relationships_bucket():
+    cfg = RankingConfig(recency_half_life_days=30)
+    topics = [TopicConfig(name="Human relationships and psychology", weight=1.0,
+                          keywords=["couple", "attachment", "intimacy"]),
+              TopicConfig(name="AI studies", weight=1.0, keywords=["neural network"])]
+    it = make_item("An astro-neural-field model with application to cortical spreading depolarization",
+                   "The potential variables are coupled to a third state variable for "
+                   "astrocytic K+ uptake, coupled with a diffusive term.")
+    assert score_item(it, topics, cfg).topic_bucket != "Human relationships and psychology"
+
+
+def test_a_paper_matching_many_keywords_beats_a_one_word_match_from_a_heavier_feed():
+    """A live dry run put "Ecophysiology: how pollinators use microclimates" at the
+    top of AI studies -- one incidental keyword from a weight-0.9 journal feed
+    outscoring a three-keyword AI paper from a weight-0.6 preprint feed. Topic
+    value has to separate a passing mention from a paper that is actually about
+    the topic."""
+    cfg = RankingConfig(recency_half_life_days=30)
+    topics = [TopicConfig(name="AI studies", weight=1.0,
+                          keywords=["neural network", "transformer", "deep learning"])]
+    passing_mention = make_item("Pollinator thermal limits", "a neural network was fitted",
+                                source_weight=0.9, link="http://bio")
+    actually_about_it = make_item("Transformer scaling", "deep learning with a transformer "
+                                  "and a neural network", source_weight=0.6, link="http://ai")
+    ranked = rank([passing_mention, actually_about_it], topics, cfg)
+    assert [s.item.link for s in ranked] == ["http://ai", "http://bio"]
