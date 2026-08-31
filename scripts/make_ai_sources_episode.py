@@ -21,11 +21,12 @@ that answered 200 to httpx and that nlm then refused.
 
 The real run is meant to be launched DETACHED (scripts/run_ai_sources_episode_detached.ps1)
 so closing the terminal / Claude session can't kill it mid-generation.
+
+The fetch / preflight / generate / boost / file machinery lives in
+`rabbit_hole.oneoff` and is under test in `tests/test_oneoff.py`; this file is
+just the episode's data. Fix behaviour there, not here.
 """
-import json
-import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 # This file lives in scripts/, but it imports the rabbit_hole package at the repo
@@ -34,25 +35,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import shutil  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
+from rabbit_hole.oneoff import EpisodeSpec, run  # noqa: E402
 
-import httpx  # noqa: E402
-import keyring  # noqa: E402
-
-from rabbit_hole.audio import AudioBoostError, boost_loudness  # noqa: E402
-from rabbit_hole.config import load_config  # noqa: E402
-from rabbit_hole.logging_config import configure_logging, post_discord  # noqa: E402
-from rabbit_hole.notebooklm import NotebookLMError, SourceRef, generate  # noqa: E402
-from rabbit_hole.plex import file_episode  # noqa: E402
-from rabbit_hole.resolver import Paper  # noqa: E402
-from rabbit_hole.sources import FeedItem  # noqa: E402
-
-CONFIG_PATH = ROOT / "config" / "config.toml"
-LOG_DIR = ROOT / "logs"
-AUDIO_DIR = ROOT / "data" / "audio"
 PDF_DIR = ROOT / "data" / "pdfs" / "ai-sources-episode"
-KEYRING_SERVICE = "rabbit_hole"
 
 # Episode identity. file_episode() names the file "{topic} - {title}{ext}" and
 # tag_audio() embeds the title; the Plex `date` tag is the generation day.
@@ -248,222 +233,20 @@ FOCUS = (
     "dismissal - and skeptical of the tidy version of these claims too."
 )
 
-
-def _sources() -> list[SourceRef]:
-    refs = [SourceRef("file", str(PDF_DIR / name)) for name, _ in PDF_SOURCES]
-    refs += [SourceRef("url", url) for url in URL_SOURCES]
-    return refs
-
-
-def _fetch_missing_pdfs() -> int:
-    """Download any source PDF not already on disk. Returns the count fetched."""
-    PDF_DIR.mkdir(parents=True, exist_ok=True)
-    fetched = 0
-    with httpx.Client(follow_redirects=True, timeout=90) as client:
-        for name, url in PDF_SOURCES:
-            path = PDF_DIR / name
-            if path.exists() and path.stat().st_size >= 10_000:
-                continue
-            print(f"fetching {name} <- {url}")
-            r = client.get(url)
-            r.raise_for_status()
-            if not r.content.startswith(b"%PDF"):
-                raise RuntimeError(f"{url} did not return a PDF")
-            path.write_bytes(r.content)
-            fetched += 1
-    return fetched
-
-
-def _build_paper() -> Paper:
-    """A minimal Paper standing in for the episode, with just the fields the back
-    end reads (title for naming/tagging, language for generate). pdf_path is
-    unused because generate() receives an explicit `sources` list."""
-    published = datetime.now(timezone.utc)
-    item = FeedItem(
-        source_name="manual-topic",
-        source_weight=1.0,
-        title=TITLE,
-        summary="One-off themed episode built from a curated reading list.",
-        link="",
-        published_at=published,
-    )
-    return Paper(
-        doi=None,
-        title=TITLE,
-        authors=["various"],
-        abstract=item.summary,
-        published_at=published,
-        pdf_path=PDF_DIR / PDF_SOURCES[0][0],
-        language=LANGUAGE,
-        source=item,
-    )
-
-
-def _urls_nlm_can_ingest(urls: list[str]) -> tuple[list[str], str | None]:
-    """Ask nlm itself which URL sources it can actually ingest, in one throwaway
-    notebook. Returns (rejected urls, fatal error or None).
-
-    An HTTP reachability check is the wrong oracle here and wrong in BOTH
-    directions, which is why this exists (both cases observed 2026-08-11):
-      - cjr.org answers 403 to a plain httpx client, yet NotebookLM ingests it.
-      - digitalcontentnext.org answers 200 to httpx, and `nlm source add` refuses
-        it -- which killed a real run four minutes in, after 18 sources had
-        already been ingested.
-    robots.txt is not the predictor either: thebulletin.org disallows GPTBot,
-    ClaudeBot and Google-Extended outright and still ingests fine, because a
-    user-initiated NotebookLM fetch is not one of those crawlers.
-
-    Costs one notebook and ~10s per URL, spends no audio-generation time, and
-    turns a class of mid-run aborts into a preflight failure."""
-    title = f"rh-preflight {uuid.uuid4().hex[:8]}"
-    created = _nlm(["notebook", "create", title], 120)
-    if created is None or created.returncode != 0:
-        return [], "could not create the preflight probe notebook (nlm auth?)"
-    notebook_id = _find_notebook_id_local(title)
-    if not notebook_id:
-        return [], "preflight probe notebook created but its id was not found"
-    rejected: list[str] = []
-    try:
-        for url in urls:
-            added = _nlm(["source", "add", notebook_id, "--url", url,
-                          "--wait", "--wait-timeout", "120"], 200)
-            if added is None or added.returncode != 0:
-                rejected.append(url)
-    finally:
-        _nlm(["notebook", "delete", notebook_id, "--confirm"], 120)
-    return rejected, None
-
-
-def _nlm(args: list[str], timeout: float):
-    """Run one nlm subcommand; None if the binary is missing or the call times out."""
-    try:
-        return subprocess.run(
-            ["nlm", *args], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-
-
-def _find_notebook_id_local(title: str) -> str | None:
-    r = _nlm(["list", "notebooks", "--json"], 120)
-    if r is None or r.returncode != 0:
-        return None
-    try:
-        notebooks = json.loads(r.stdout)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(notebooks, list):
-        return None
-    matches = [n for n in notebooks if n.get("title") == title and n.get("id")]
-    matches.sort(key=lambda n: n.get("updated_at", ""), reverse=True)
-    return matches[0]["id"] if matches else None
-
-
-def _preflight(probe_urls: bool = True) -> list[str]:
-    """Return human-readable blockers; empty list means good to go. Catches the
-    cheap-to-detect failures before we commit ~40 min of NotebookLM time. With 22
-    sources the URL check matters most: one source nlm won't take aborts the whole
-    notebook after everything ahead of it has already ingested, which is exactly
-    how the first run of this episode died.
-
-    Cheap local checks run first; the ~1 min nlm URL probe runs last and only if
-    the CLI is authenticated, since without auth every probe would fail anyway.
-    Pass probe_urls=False to skip it (local-only sanity check)."""
-    problems: list[str] = []
-    # Build the Paper here rather than only on the real path: --check once reported
-    # OK while _build_paper() still raised, so a detached run died seconds in with
-    # the preflight's blessing.
-    try:
-        _build_paper()
-    except Exception as e:  # noqa: BLE001 - any construction failure is a blocker
-        problems.append(f"episode metadata could not be built: {e!r}")
-    for name, _ in PDF_SOURCES:
-        path = PDF_DIR / name
-        if not path.exists():
-            problems.append(f"source PDF not found: {path}")
-        elif path.stat().st_size < 10_000:
-            problems.append(f"source PDF suspiciously small ({path.stat().st_size} B): {path}")
-    for tool in ("ffmpeg", "ffprobe"):
-        if shutil.which(tool) is None:
-            problems.append(f"{tool} not on PATH (needed for the +40% loudness boost)")
-    if not keyring.get_password(KEYRING_SERVICE, "plex_token"):
-        problems.append("Plex token missing from keyring (service 'rabbit_hole', key 'plex_token')")
-    # Functional nlm check: proves the CLI is present AND the login is still valid,
-    # which is the failure that would otherwise surface only at notebook-create.
-    r = _nlm(["list", "notebooks", "--json"], 60)
-    if r is None:
-        problems.append("nlm CLI not runnable on PATH")
-        return problems
-    if r.returncode != 0:
-        problems.append("nlm CLI failed `list notebooks` -- not authenticated? (try: nlm login)")
-        return problems
-
-    if probe_urls and URL_SOURCES:
-        rejected, fatal = _urls_nlm_can_ingest(URL_SOURCES)
-        if fatal:
-            problems.append(fatal)
-        for url in rejected:
-            problems.append(f"nlm refuses to ingest this URL source (swap it): {url}")
-    return problems
-
-
-def main() -> int:
-    args = sys.argv[1:]
-    check_only = "--check" in args
-    logger = configure_logging(LOG_DIR, None)
-    webhook = keyring.get_password(KEYRING_SERVICE, "discord_webhook_url")
-    sources = _sources()
-
-    if "--fetch" in args:
-        print(f"fetched {_fetch_missing_pdfs()} missing source PDF(s).")
-
-    problems = _preflight(probe_urls="--no-probe" not in args)
-    if problems:
-        for p in problems:
-            logger.error("ai_sources_episode_preflight_problem", problem=p)
-        print("PREFLIGHT FAILED:")
-        for p in problems:
-            print("  -", p)
-        return 2
-    logger.info("ai_sources_episode_preflight_ok", sources=len(sources))
-    print(f"Preflight OK ({len(sources)} sources: "
-          f"{len(PDF_SOURCES)} PDFs + {len(URL_SOURCES)} URLs).")
-    if check_only:
-        print("--check: stopping before generation (no NotebookLM time spent).")
-        return 0
-
-    cfg = load_config(CONFIG_PATH)
-    token = keyring.get_password(KEYRING_SERVICE, "plex_token") or ""
-    paper = _build_paper()
-
-    logger.info("ai_sources_episode_start", title=TITLE, length=AUDIO_LENGTH,
-                fmt=AUDIO_FORMAT, sources=len(sources))
-    try:
-        ep = generate(paper, cfg.notebooklm, out_dir=AUDIO_DIR,
-                      audio_format=AUDIO_FORMAT, audio_length=AUDIO_LENGTH,
-                      focus=FOCUS, sources=sources)
-    except NotebookLMError as e:
-        logger.error("ai_sources_episode_nlm_failed", title=TITLE, error=str(e))
-        post_discord(webhook, f"Rabbit Hole AI-sources episode FAILED at NotebookLM: {e}")
-        return 1
-    logger.info("ai_sources_episode_generated", audio=str(ep.audio_path))
-
-    # Mirror _publish: a boost failure files the quieter episode rather than dropping it.
-    try:
-        boost_loudness(ep.audio_path, gain=cfg.audio.gain_factor)
-        logger.info("ai_sources_episode_boosted", gain=cfg.audio.gain_factor)
-    except AudioBoostError as e:
-        logger.error("ai_sources_episode_boost_failed", title=TITLE, error=str(e))
-
-    dest = file_episode(ep, TOPIC_BUCKET, cfg.plex, token)
-    logger.info("ai_sources_episode_filed", path=str(dest))
-    post_discord(webhook, f"Rabbit Hole AI-sources episode ready: {TITLE}\n{dest.name}")
-    # The title carries an em dash, and a Scheduled Task's stdout is not UTF-8;
-    # the episode is already filed by here, so never let printing be what fails.
-    print("DONE:", str(dest).encode("ascii", "replace").decode("ascii"))
-    return 0
+SPEC = EpisodeSpec(
+    slug="ai_sources",
+    label="AI-sources",
+    title=TITLE,
+    topic_bucket=TOPIC_BUCKET,
+    pdf_dir=PDF_DIR,
+    pdf_sources=PDF_SOURCES,
+    url_sources=URL_SOURCES,
+    focus=FOCUS,
+    language=LANGUAGE,
+    audio_format=AUDIO_FORMAT,
+    audio_length=AUDIO_LENGTH,
+)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run(SPEC, sys.argv[1:]))

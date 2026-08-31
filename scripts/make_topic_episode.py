@@ -17,8 +17,11 @@ Modes:
 
 The real run is meant to be launched DETACHED (scripts/run_topic_episode_detached.ps1)
 so closing the terminal / Claude session can't kill it mid-generation.
+
+The fetch / preflight / generate / boost / file machinery lives in
+`rabbit_hole.oneoff` and is under test in `tests/test_oneoff.py`; this file is
+just the episode's data. Fix behaviour there, not here.
 """
-import subprocess
 import sys
 from pathlib import Path
 
@@ -28,25 +31,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import shutil  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
+from rabbit_hole.oneoff import EpisodeSpec, run  # noqa: E402
 
-import httpx  # noqa: E402
-import keyring  # noqa: E402
-
-from rabbit_hole.audio import AudioBoostError, boost_loudness  # noqa: E402
-from rabbit_hole.config import load_config  # noqa: E402
-from rabbit_hole.logging_config import configure_logging, post_discord  # noqa: E402
-from rabbit_hole.notebooklm import NotebookLMError, SourceRef, generate  # noqa: E402
-from rabbit_hole.plex import file_episode  # noqa: E402
-from rabbit_hole.resolver import Paper  # noqa: E402
-from rabbit_hole.sources import FeedItem  # noqa: E402
-
-CONFIG_PATH = ROOT / "config" / "config.toml"
-LOG_DIR = ROOT / "logs"
-AUDIO_DIR = ROOT / "data" / "audio"
 PDF_DIR = ROOT / "data" / "pdfs" / "algorithms-episode"
-KEYRING_SERVICE = "rabbit_hole"
 
 # Episode identity. file_episode() names the file "{topic} - {title}{ext}" and
 # tag_audio() embeds the title; the Plex `date` tag is the generation day.
@@ -121,168 +108,20 @@ FOCUS = (
     "them. Thoughtful, curious, skeptical of both hype and dismissal."
 )
 
-
-def _sources() -> list[SourceRef]:
-    refs = [SourceRef("file", str(PDF_DIR / name)) for name, _ in PDF_SOURCES]
-    refs += [SourceRef("url", url) for url in URL_SOURCES]
-    return refs
-
-
-def _fetch_missing_pdfs() -> int:
-    """Download any source PDF not already on disk. Returns the count fetched."""
-    PDF_DIR.mkdir(parents=True, exist_ok=True)
-    fetched = 0
-    with httpx.Client(follow_redirects=True, timeout=90) as client:
-        for name, url in PDF_SOURCES:
-            path = PDF_DIR / name
-            if path.exists() and path.stat().st_size >= 10_000:
-                continue
-            print(f"fetching {name} <- {url}")
-            r = client.get(url)
-            r.raise_for_status()
-            if not r.content.startswith(b"%PDF"):
-                raise RuntimeError(f"{url} did not return a PDF")
-            path.write_bytes(r.content)
-            fetched += 1
-    return fetched
-
-
-def _build_paper() -> Paper:
-    """A minimal Paper standing in for the episode, with just the fields the back
-    end reads (title for naming/tagging, language for generate). pdf_path is
-    unused because generate() receives an explicit `sources` list."""
-    published = datetime.now(timezone.utc)
-    item = FeedItem(
-        source_name="manual-topic",
-        source_weight=1.0,
-        title=TITLE,
-        summary="One-off themed episode built from a curated reading list.",
-        link="",
-        published_at=published,
-    )
-    return Paper(
-        doi=None,
-        title=TITLE,
-        authors=["various"],
-        abstract=item.summary,
-        published_at=published,
-        pdf_path=PDF_DIR / PDF_SOURCES[0][0],
-        language=LANGUAGE,
-        source=item,
-    )
-
-
-def _url_reachable(url: str) -> bool:
-    """HEAD, falling back to a ranged GET: some hosts (PMC, news sites) answer
-    HEAD with 403/405 while serving GET fine."""
-    try:
-        with httpx.Client(follow_redirects=True, timeout=25) as client:
-            r = client.head(url)
-            if r.status_code >= 400:
-                r = client.get(url, headers={"Range": "bytes=0-2048"})
-            return r.status_code < 400
-    except httpx.HTTPError:
-        return False
-
-
-def _preflight() -> list[str]:
-    """Return human-readable blockers; empty list means good to go. Catches the
-    cheap-to-detect failures before we commit ~40 min of NotebookLM time. With 14
-    sources the reachability check matters more than in the single-PDF one-off:
-    one dead link aborts the notebook after the sources ahead of it have ingested."""
-    problems: list[str] = []
-    # Build the Paper here rather than only on the real path: --check previously
-    # reported OK while _build_paper() still raised, so the detached run died
-    # seconds in with the preflight's blessing.
-    try:
-        _build_paper()
-    except Exception as e:  # noqa: BLE001 - any construction failure is a blocker
-        problems.append(f"episode metadata could not be built: {e!r}")
-    for name, _ in PDF_SOURCES:
-        path = PDF_DIR / name
-        if not path.exists():
-            problems.append(f"source PDF not found: {path}")
-        elif path.stat().st_size < 10_000:
-            problems.append(f"source PDF suspiciously small ({path.stat().st_size} B): {path}")
-    for url in URL_SOURCES:
-        if not _url_reachable(url):
-            problems.append(f"source URL unreachable: {url}")
-    for tool in ("ffmpeg", "ffprobe"):
-        if shutil.which(tool) is None:
-            problems.append(f"{tool} not on PATH (needed for the +40% loudness boost)")
-    if not keyring.get_password(KEYRING_SERVICE, "plex_token"):
-        problems.append("Plex token missing from keyring (service 'rabbit_hole', key 'plex_token')")
-    # Functional nlm check: proves the CLI is present AND the login is still valid,
-    # which is the failure that would otherwise surface only at notebook-create.
-    try:
-        r = subprocess.run(
-            ["nlm", "list", "notebooks", "--json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=60,
-        )
-        if r.returncode != 0:
-            problems.append("nlm CLI failed `list notebooks` -- not authenticated? (try: nlm login)")
-    except (OSError, subprocess.TimeoutExpired):
-        problems.append("nlm CLI not runnable on PATH")
-    return problems
-
-
-def main() -> int:
-    args = sys.argv[1:]
-    check_only = "--check" in args
-    logger = configure_logging(LOG_DIR, None)
-    webhook = keyring.get_password(KEYRING_SERVICE, "discord_webhook_url")
-    sources = _sources()
-
-    if "--fetch" in args:
-        print(f"fetched {_fetch_missing_pdfs()} missing source PDF(s).")
-
-    problems = _preflight()
-    if problems:
-        for p in problems:
-            logger.error("topic_episode_preflight_problem", problem=p)
-        print("PREFLIGHT FAILED:")
-        for p in problems:
-            print("  -", p)
-        return 2
-    logger.info("topic_episode_preflight_ok", sources=len(sources))
-    print(f"Preflight OK ({len(sources)} sources: "
-          f"{len(PDF_SOURCES)} PDFs + {len(URL_SOURCES)} URLs).")
-    if check_only:
-        print("--check: stopping before generation (no NotebookLM time spent).")
-        return 0
-
-    cfg = load_config(CONFIG_PATH)
-    token = keyring.get_password(KEYRING_SERVICE, "plex_token") or ""
-    paper = _build_paper()
-
-    logger.info("topic_episode_start", title=TITLE, length=AUDIO_LENGTH,
-                fmt=AUDIO_FORMAT, sources=len(sources))
-    try:
-        ep = generate(paper, cfg.notebooklm, out_dir=AUDIO_DIR,
-                      audio_format=AUDIO_FORMAT, audio_length=AUDIO_LENGTH,
-                      focus=FOCUS, sources=sources)
-    except NotebookLMError as e:
-        logger.error("topic_episode_nlm_failed", title=TITLE, error=str(e))
-        post_discord(webhook, f"Rabbit Hole topic episode FAILED at NotebookLM: {e}")
-        return 1
-    logger.info("topic_episode_generated", audio=str(ep.audio_path))
-
-    # Mirror _publish: a boost failure files the quieter episode rather than dropping it.
-    try:
-        boost_loudness(ep.audio_path, gain=cfg.audio.gain_factor)
-        logger.info("topic_episode_boosted", gain=cfg.audio.gain_factor)
-    except AudioBoostError as e:
-        logger.error("topic_episode_boost_failed", title=TITLE, error=str(e))
-
-    dest = file_episode(ep, TOPIC_BUCKET, cfg.plex, token)
-    logger.info("topic_episode_filed", path=str(dest))
-    post_discord(webhook, f"Rabbit Hole topic episode ready: {TITLE}\n{dest.name}")
-    # The title carries an em dash, and a Scheduled Task's stdout is not UTF-8;
-    # the episode is already filed by here, so never let printing be what fails.
-    print("DONE:", str(dest).encode("ascii", "replace").decode("ascii"))
-    return 0
+SPEC = EpisodeSpec(
+    slug="topic",
+    label="topic",
+    title=TITLE,
+    topic_bucket=TOPIC_BUCKET,
+    pdf_dir=PDF_DIR,
+    pdf_sources=PDF_SOURCES,
+    url_sources=URL_SOURCES,
+    focus=FOCUS,
+    language=LANGUAGE,
+    audio_format=AUDIO_FORMAT,
+    audio_length=AUDIO_LENGTH,
+)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run(SPEC, sys.argv[1:]))
