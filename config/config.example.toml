@@ -1,6 +1,7 @@
 [schedule]
 cron = "0 7 * * MON"            # Monday 07:00 local
-episodes_per_run = 3
+episodes_per_run = 2           # NotebookLM rate-limits `audio create` after a
+                               # couple of overviews per account per day.
 
 [ranking]
 recency_half_life_days = 30

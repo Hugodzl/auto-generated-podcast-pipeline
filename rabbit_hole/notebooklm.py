@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import time
 import uuid
@@ -23,6 +24,22 @@ _log = structlog.get_logger()
 
 class NotebookLMError(RuntimeError):
     pass
+
+
+class NotebookLMRateLimited(NotebookLMError):
+    """The account's audio-overview allowance is spent.
+
+    Distinct from a per-paper failure: retrying with a different source cannot
+    help, so the caller should stop asking rather than spend its failure budget.
+    """
+
+
+# nlm surfaces this as gRPC code 8 (RESOURCE_EXHAUSTED) wrapped in a Tailwind
+# UserDisplayableError. Its prose says "wait a few minutes", but the cap
+# observed on 2026-09-07 outlasted the run by hours -- treat it as "not today".
+_RATE_LIMIT_MARKERS = ("code 8", "rate limit", "resource_exhausted", "quota")
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 @dataclass
@@ -83,6 +100,41 @@ def _nlm(nlm_command: str, args: list[str], timeout: float):
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
+
+
+def _cli_output(result) -> str:
+    """Everything the CLI said, as one flat line of plain text.
+
+    nlm prints its errors to STDOUT (a rich console), not stderr, hard-wraps
+    them mid-word, and mixes in spinner frames and ANSI codes -- so read both
+    streams, then strip the console decoration. The rate-limit match and the
+    log line both want prose, and a stray braille spinner frame would blow up
+    on a cp1252 console downstream.
+    """
+    if result is None:
+        return "nlm did not run (binary missing or call timed out)"
+    text = _ANSI_RE.sub("", (result.stdout or "") + " " + (result.stderr or ""))
+    plain = "".join(c for c in text
+                    if c.isprintable() and not "\u2800" <= c <= "\u28ff")
+    return " ".join(plain.split())
+
+
+def _is_rate_limited(text: str) -> bool:
+    low = text.lower()
+    return any(m in low for m in _RATE_LIMIT_MARKERS)
+
+
+def _log_call_failed(step: str, result, **ctx) -> str:
+    """Record what the CLI said about a failed step and return that text.
+
+    The orchestrator only ever saw generate()'s "produced no audio", which hid
+    the real cause for a week (2026-09-07); every failing step now says why.
+    """
+    output = _cli_output(result)
+    _log.error("nlm_call_failed", step=step,
+               returncode=None if result is None else result.returncode,
+               output=output[:800], **ctx)
+    return output
 
 
 def _nlm_json(nlm_command: str, args: list[str], timeout: float):
@@ -149,8 +201,10 @@ def _download_audio(nlm_command: str, notebook_id: str, artifact_id: str,
             return True
         if attempt < _DOWNLOAD_MAX_ATTEMPTS - 1:
             _log.warning("nlm_download_retry", notebook_id=notebook_id,
-                         attempt=attempt + 1)
+                         attempt=attempt + 1, output=_cli_output(result)[:200])
             time.sleep(_DOWNLOAD_RETRY_INTERVAL)
+    _log.error("nlm_download_failed", notebook_id=notebook_id,
+               attempts=_DOWNLOAD_MAX_ATTEMPTS)
     return False
 
 
@@ -167,7 +221,9 @@ def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
     an audio overview, poll until it completes, then download the .m4a. The
     per-run notebook is deleted afterward. Any failure — non-zero exit, timeout,
     missing binary, or generation never completing — returns None so the
-    orchestrator's failure budget handles them uniformly.
+    orchestrator's failure budget handles them uniformly, and logs what the CLI
+    said (`nlm_call_failed`). The one exception is a spent audio allowance,
+    which raises NotebookLMRateLimited: no other paper would fare better.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -177,6 +233,7 @@ def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
     try:
         created = _nlm(nlm_command, ["notebook", "create", title], _CALL_TIMEOUT)
         if created is None or created.returncode != 0:
+            _log_call_failed("notebook create", created, title=title)
             return None
         notebook_id = _find_notebook_id(nlm_command, title)
         if not notebook_id:
@@ -194,8 +251,8 @@ def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
                 _SOURCE_WAIT_TIMEOUT + _CALL_TIMEOUT,
             )
             if added is None or added.returncode != 0:
-                _log.error("nlm_source_add_failed", notebook_id=notebook_id,
-                           source=ref.value)
+                _log_call_failed("source add", added, notebook_id=notebook_id,
+                                 source=ref.value)
                 return None
             _log.info("nlm_source_added", notebook_id=notebook_id,
                       source=ref.value, index=i, total=len(refs))
@@ -210,11 +267,22 @@ def _run_nlm(nlm_command: str, sources, out_dir: Path, *,
         audio_args.append("--confirm")
         requested = _nlm(nlm_command, audio_args, _CALL_TIMEOUT)
         if requested is None or requested.returncode != 0:
+            output = _log_call_failed("audio create", requested, notebook_id=notebook_id)
+            if _is_rate_limited(output):
+                # Raise rather than return None: the next paper would hit the
+                # same wall, so the caller must stop the run, not retry.
+                # Short on purpose: this text lands in the Discord summary and
+                # the run row. The CLI's own words are in nlm_call_failed above.
+                raise NotebookLMRateLimited(
+                    "nlm rate limited audio creation (per-account audio-overview "
+                    "cap) — see the nlm_call_failed log line for the CLI text")
             return None
         _log.info("nlm_audio_requested", notebook_id=notebook_id)
 
         artifact_id = _wait_for_audio(nlm_command, notebook_id)
         if not artifact_id:
+            _log.error("nlm_audio_never_completed", notebook_id=notebook_id,
+                       waited_s=_AUDIO_POLL_TIMEOUT)
             return None
         _log.info("nlm_audio_ready", notebook_id=notebook_id, artifact_id=artifact_id)
 

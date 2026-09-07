@@ -4,9 +4,10 @@ from pathlib import Path
 import pytest
 
 from rabbit_hole.config import Config
-from rabbit_hole.notebooklm import GeneratedEpisode, NotebookLMError
+from rabbit_hole.notebooklm import (GeneratedEpisode, NotebookLMError,
+                                    NotebookLMRateLimited)
 from rabbit_hole.resolver import Paper
-from rabbit_hole.run import run_pipeline
+from rabbit_hole.run import RunStoppedEarly, run_pipeline
 from rabbit_hole.sources import FeedItem
 from rabbit_hole.state import State, hash_str
 
@@ -500,3 +501,72 @@ def test_run_pipeline_hands_a_url_sourced_item_to_nlm_as_a_url(tmp_path, monkeyp
     assert seen["label"] == nlm_label(None, "https://aeon.co/essays/whales")
     con = sqlite3.connect(tmp_path / "state.db")
     assert con.execute("select pdf_path from episodes").fetchone()[0] is None
+
+
+def test_run_pipeline_stops_early_when_nlm_rate_limits(tmp_path, monkeypatch):
+    # A spent audio allowance is not a per-paper failure: burning the whole
+    # consecutive-failure budget against it wastes candidates (and their PDF
+    # downloads) and reports a failed run. Stop at the first one instead.
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config(episodes_per_run=3)
+    items = [_item(f"Whale paper {i}", f"http://x/p{i}") for i in range(5)]
+    by_link = {it.link: _paper_for(it) for it in items}
+    attempts = []
+
+    def _generate(paper, *a, **k):
+        attempts.append(paper.title)
+        if len(attempts) == 1:
+            return _ep(paper, tmp_path)
+        raise NotebookLMRateLimited("nlm rate limited audio creation")
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter(items))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda item, *a, **k: by_link[item.link])
+    monkeypatch.setattr("rabbit_hole.run.generate", _generate)
+    monkeypatch.setattr("rabbit_hole.run.file_episode", lambda e, b, c, t: tmp_path / "f.m4a")
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    with pytest.raises(RunStoppedEarly) as excinfo:
+        run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+
+    assert excinfo.value.episodes == 1        # the one that landed still counts
+    assert len(attempts) == 2                 # no grinding through the rest
+    assert "rate limit" in str(excinfo.value).lower()
+
+
+def test_run_pipeline_leaves_no_pending_row_after_a_rate_limit(tmp_path, monkeypatch):
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    cfg = _config(episodes_per_run=2)
+    item = _item("Whale song", "http://x/p1")
+    paper = _paper_for(item)
+
+    monkeypatch.setattr("rabbit_hole.run.poll_all", lambda c, s, **k: iter([item]))
+    monkeypatch.setattr("rabbit_hole.run.resolve", lambda *a, **k: paper)
+    monkeypatch.setattr("rabbit_hole.run.generate",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            NotebookLMRateLimited("rate limited")))
+    monkeypatch.setattr("rabbit_hole.run._plex_token", lambda cfg: "token")
+
+    with pytest.raises(RunStoppedEarly):
+        run_pipeline(cfg, st, pdf_dir=tmp_path, audio_dir=tmp_path, logger=_NullLog())
+
+    assert st.list_pending() == []
+
+
+def test_run_summary_says_why_a_run_stopped_short(tmp_path):
+    from rabbit_hole.run import _run_summary
+
+    st = State(tmp_path / "state.db", MIGRATIONS)
+    st.init()
+    run_id = st.start_run()
+    st.record_episode(doi=None, title_hash="h", title="Whale song", language="en",
+                      source_name="Nature", topic_bucket="Animals", score=1.0,
+                      pdf_path=None, audio_path="a.m4a", run_id=run_id)
+
+    summary = _run_summary(st, run_id, "partial", 1, 2,
+                           note="NotebookLM rate limited audio creation")
+
+    assert "1/2" in summary
+    assert "Whale song" in summary
+    assert "rate limited" in summary

@@ -9,7 +9,8 @@ from structlog.testing import capture_logs
 
 from rabbit_hole import notebooklm
 from rabbit_hole.config import NotebookLMConfig
-from rabbit_hole.notebooklm import GeneratedEpisode, generate, NotebookLMError
+from rabbit_hole.notebooklm import (GeneratedEpisode, generate, NotebookLMError,
+                                    NotebookLMRateLimited)
 from rabbit_hole.resolver import Paper
 from rabbit_hole.sources import FeedItem
 
@@ -61,11 +62,13 @@ class FakeNlm:
     """
 
     def __init__(self, *, statuses=("completed",), create_rc=0, add_rc=0,
-                 audio_rc=0, download_rc=0, make_file=True, download_fail_times=0):
+                 audio_rc=0, download_rc=0, make_file=True, download_fail_times=0,
+                 audio_stdout=""):
         self.statuses = list(statuses)
         self.create_rc = create_rc
         self.add_rc = add_rc
         self.audio_rc = audio_rc
+        self.audio_stdout = audio_stdout
         self.download_rc = download_rc
         self.make_file = make_file
         self.download_fail_times = download_fail_times
@@ -91,7 +94,7 @@ class FakeNlm:
         if parts[:2] == ["source", "add"]:
             return _Result(self.add_rc)
         if parts[:2] == ["audio", "create"]:
-            return _Result(self.audio_rc)
+            return _Result(self.audio_rc, self.audio_stdout)
         if parts[:2] == ["status", "artifacts"]:
             status = self.statuses[min(self._polls, len(self.statuses) - 1)]
             self._polls += 1
@@ -480,3 +483,79 @@ def test_run_nlm_uses_an_explicit_label_in_the_notebook_title(tmp_path, monkeypa
                         tmp_path, label="abc123")
     create = next(c for c in fake.calls if c[1:3] == ["notebook", "create"])
     assert create[3].startswith("rabbit-hole abc123 ")
+
+
+# The rich-wrapped text nlm 0.6.12 prints (on STDOUT, not stderr) when the
+# account's audio-overview allowance is spent. Captured live on 2026-09-07.
+RATE_LIMITED_OUTPUT = (
+    "\u280f Creating audio...\r"
+    "Error: Rate limited \u2014 API error (code 8): \r\n"
+    "type.googleapis.com/google.internal.labs.tailwind.orchestration.v1.UserDisplayab\r\n"
+    "leError. Wait a few minutes before retrying audio creation.\r\n"
+)
+
+
+def test_run_nlm_logs_what_the_cli_actually_said_when_a_step_fails(tmp_path, monkeypatch):
+    # Without this the only record of a failure is generate()'s "produced no
+    # audio", which hid a week-long rate limit (2026-09-07).
+    fake = FakeNlm(audio_rc=1, audio_stdout="Error: notebook has no sources\n")
+    _install_fake(monkeypatch, fake)
+
+    with capture_logs() as logs:
+        assert notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path / "o") is None
+
+    failures = [e for e in logs if e["event"] == "nlm_call_failed"]
+    assert [e["step"] for e in failures] == ["audio create"]
+    assert failures[0]["returncode"] == 1
+    assert "notebook has no sources" in failures[0]["output"]
+
+
+def test_run_nlm_raises_rate_limited_when_the_audio_allowance_is_spent(tmp_path, monkeypatch):
+    fake = FakeNlm(audio_rc=1, audio_stdout=RATE_LIMITED_OUTPUT)
+    _install_fake(monkeypatch, fake)
+
+    with pytest.raises(NotebookLMRateLimited) as excinfo:
+        notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path / "o")
+
+    assert "rate limit" in str(excinfo.value).lower()
+    # A rate limit is still a clean exit: the per-run notebook must not leak.
+    assert fake.deleted_notebooks() == [fake.notebook_id]
+
+
+def test_run_nlm_treats_an_ordinary_audio_failure_as_a_plain_miss(tmp_path, monkeypatch):
+    # Only a rate limit is special-cased; everything else keeps the old
+    # return-None contract so the consecutive-failure budget still applies.
+    fake = FakeNlm(audio_rc=1, audio_stdout="Error: internal server error\n")
+    _install_fake(monkeypatch, fake)
+
+    assert notebooklm._run_nlm("nlm", tmp_path / "p.pdf", tmp_path / "o") is None
+
+
+def test_generate_propagates_a_rate_limit_instead_of_produced_no_audio(tmp_path, monkeypatch):
+    paper = make_paper(tmp_path)
+    fake = FakeNlm(audio_rc=1, audio_stdout=RATE_LIMITED_OUTPUT)
+    _install_fake(monkeypatch, fake)
+
+    with pytest.raises(NotebookLMRateLimited):
+        generate(paper, NotebookLMConfig(nlm_command="nlm"), out_dir=tmp_path)
+
+
+def test_cli_output_strips_the_rich_console_decoration(tmp_path):
+    # The rate-limit match wants prose, and the braille spinner frame rich
+    # leaves in stdout is unencodable on a cp1252 console.
+    flat = notebooklm._cli_output(
+        _Result(1, "\x1b[32m" + RATE_LIMITED_OUTPUT + "\x1b[0m"))
+    assert "\u280f" not in flat and "\x1b" not in flat and "\r" not in flat
+    assert flat.startswith("Creating audio...Error: Rate limited")
+    assert "(code 8)" in flat
+    # Dropping the newlines outright is deliberate: rich hard-wraps mid-word,
+    # so joining without a space is what puts the identifier back together.
+    assert "UserDisplayableError" in flat
+
+
+def test_rate_limit_detection_matches_the_grpc_code_and_the_prose(tmp_path):
+    assert notebooklm._is_rate_limited(RATE_LIMITED_OUTPUT) is True
+    assert notebooklm._is_rate_limited("Error: API error (code 8): quota") is True
+    assert notebooklm._is_rate_limited("Error: RESOURCE_EXHAUSTED") is True
+    assert notebooklm._is_rate_limited("Error: notebook not found") is False
+    assert notebooklm._is_rate_limited("") is False

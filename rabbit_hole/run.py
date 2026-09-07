@@ -8,8 +8,8 @@ from rabbit_hole.config import Config, load_config
 from rabbit_hole.lockfile import PipelineLockError, acquire_lock
 from rabbit_hole.logging_config import configure_logging, post_discord
 from rabbit_hole.audio import AudioBoostError, boost_loudness
-from rabbit_hole.notebooklm import (GeneratedEpisode, NotebookLMError, SourceRef, generate,
-                                    nlm_label)
+from rabbit_hole.notebooklm import (GeneratedEpisode, NotebookLMError, NotebookLMRateLimited,
+                                    SourceRef, generate, nlm_label)
 from rabbit_hole.plex import file_episode
 from rabbit_hole.ranker import interleave_topics, rank
 from rabbit_hole.recovery import recover_orphans
@@ -27,6 +27,19 @@ KEYRING_SERVICE = "rabbit_hole"
 MAX_CONSECUTIVE_FAILURES = 5
 
 
+class RunStoppedEarly(Exception):
+    """The walk ended before reaching the target for a reason that isn't a fault.
+
+    Carries the episodes that did land, so the run reports as partial (with the
+    reason) rather than failed -- 2026-09-07's run filed 2 of 3 and still
+    announced "run failed", which is the wrong thing to wake up to.
+    """
+
+    def __init__(self, message: str, episodes: int):
+        super().__init__(message)
+        self.episodes = episodes
+
+
 def _plex_token(cfg: Config) -> str:
     return keyring.get_password(KEYRING_SERVICE, "plex_token") or ""
 
@@ -40,12 +53,15 @@ def _startup_recovery(state: State, webhook: str | None, logger) -> None:
                          f"Rabbit Hole: closed {stale} stale run(s) from a previous crash.")
 
 
-def _run_summary(state: State, run_id: int, status: str, count: int, target: int) -> str:
+def _run_summary(state: State, run_id: int, status: str, count: int, target: int,
+                 note: str | None = None) -> str:
     titles = state.episode_titles_for_run(run_id)
     lines = "\n".join(f"- {t}" for t in titles) if titles else "(none)"
     warnings = "".join(f"\nWARNING: source '{name}' has failed {n} runs in a row"
                        for name, n in state.failing_sources())
-    return f"Rabbit Hole run {status}: {count}/{target} episodes\n{lines}{warnings}"
+    reason = f"\nStopped early: {note}" if note else ""
+    return (f"Rabbit Hole run {status}: {count}/{target} episodes\n"
+            f"{lines}{reason}{warnings}")
 
 
 def _publish(ep: GeneratedEpisode, topic_bucket: str, score: float, cfg: Config,
@@ -136,6 +152,16 @@ def run_pipeline(cfg: Config, state: State, pdf_dir: Path, audio_dir: Path,
         try:
             ep = generate(paper, cfg.notebooklm, out_dir=audio_dir, sources=sources,
                           label=nlm_label(paper.pdf_path, paper.source.link))
+        except NotebookLMRateLimited as e:
+            # NotebookLM caps audio overviews per account per day, and the cap
+            # outlasts any wait worth doing inside a run. Every remaining
+            # candidate would hit the same wall (after paying for a PDF fetch),
+            # so end the walk and keep what landed. The ranked list is rebuilt
+            # from scratch next run; a same-day retry would need its own trigger.
+            state.delete_pending(pending_id)
+            logger.error("nlm_rate_limited", title=paper.title, error=str(e),
+                         episodes=generated)
+            raise RunStoppedEarly(str(e), episodes=generated) from e
         except NotebookLMError as e:
             # A clean nlm failure already deleted its notebook (finally block in
             # _run_nlm) — the snapshot would only confuse recovery. Drop it.
@@ -178,15 +204,21 @@ def main() -> int:
         _startup_recovery(state, webhook, logger)
         run_id = state.start_run()
         try:
-            count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR,
-                                 logger=logger, run_id=run_id)
+            note: str | None = None
+            try:
+                count = run_pipeline(cfg, state, pdf_dir=PDF_DIR, audio_dir=AUDIO_DIR,
+                                     logger=logger, run_id=run_id)
+            except RunStoppedEarly as e:
+                # Not a failure: whatever landed is filed and recorded.
+                count, note = e.episodes, str(e)
             status = "ok" if count >= cfg.schedule.episodes_per_run else "partial"
-            state.finish_run(run_id, status=status, error=None)
-            logger.info("run_complete", status=status, episodes=count,
+            state.finish_run(run_id, status=status, error=note)
+            logger.info("run_complete", status=status, episodes=count, note=note,
                         elapsed_s=round(time.monotonic() - started))
             if webhook:
                 post_discord(webhook, _run_summary(state, run_id, status, count,
-                                                   cfg.schedule.episodes_per_run))
+                                                   cfg.schedule.episodes_per_run,
+                                                   note=note))
             return 0
         except Exception as e:  # noqa: BLE001 - top-level guard
             logger.error("run_failed", error=str(e))
