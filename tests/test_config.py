@@ -37,7 +37,7 @@ MINIMAL = """
     [plex]
     base_url = "http://127.0.0.1:32400/"
     library_name = "The Random Rabbit Hole"
-    target_folder = "D:/Videos/PlexLibrary/Podcasts/The Random Rabbit Hole"
+    target_folder = "D:/Media/Podcasts/The Random Rabbit Hole"
 
     [apis]
     unpaywall_email = "you@example.com"
@@ -154,34 +154,54 @@ def test_ranking_topic_round_robin_defaults_true(tmp_path):
 # actually reached Plex, and the keyword lists are the only thing preventing them.
 # --------------------------------------------------------------------------
 
-REPO_CONFIG = Path(__file__).parent.parent / "config" / "config.toml"
+_CONFIG_DIR = Path(__file__).parent.parent / "config"
+
+# config.toml is gitignored, so a fresh clone only has the example -- which is
+# where the topic rules are actually maintained. Check the example always, and
+# the live config too when the machine running the tests has one, so a local
+# retune that breaks a bucket still fails here.
+REPO_CONFIGS = [p for p in (_CONFIG_DIR / "config.example.toml",
+                            _CONFIG_DIR / "config.toml") if p.exists()]
 
 
-def _bucket(title, summary):
+def _buckets(title, summary):
+    """The topic bucket each available config assigns, keyed by config name."""
     from datetime import datetime, timezone
 
     from rabbit_hole.ranker import score_item
     from rabbit_hole.sources import FeedItem
 
-    cfg = load_config(REPO_CONFIG)
-    item = FeedItem(source_name="S", source_weight=1.0, title=title, summary=summary,
-                    link="http://x", published_at=datetime.now(timezone.utc))
-    return score_item(item, cfg.topics, cfg.ranking).topic_bucket
+    out = {}
+    for path in REPO_CONFIGS:
+        cfg = load_config(path)
+        item = FeedItem(source_name="S", source_weight=1.0, title=title, summary=summary,
+                        link="http://x", published_at=datetime.now(timezone.utc))
+        out[path.name] = score_item(item, cfg.topics, cfg.ranking).topic_bucket
+    return out
+
+
+def _assert_not_bucket(title, summary, wrong_bucket):
+    for name, bucket in _buckets(title, summary).items():
+        assert bucket != wrong_bucket, f"{name} still files this under {wrong_bucket}"
 
 
 def test_a_coupled_dynamics_paper_is_not_a_relationships_episode():
     # Episode 8 shipped as "Human relationships and psychology - An astro-neural-field
     # model with application to cortical spreading depolarization".
-    assert _bucket("An astro-neural-field model with application to cortical spreading depolarization",
-                   "The potential variables are coupled to a third state variable for "
-                   "astrocytic K+ uptake.") != "Human relationships and psychology"
+    _assert_not_bucket(
+        "An astro-neural-field model with application to cortical spreading depolarization",
+        "The potential variables are coupled to a third state variable for "
+        "astrocytic K+ uptake.",
+        "Human relationships and psychology")
 
 
 def test_sequence_alignment_is_not_an_ai_studies_episode():
-    assert _bucket("Multiple sequence alignment of the chloroplast genome",
-                   "We report a whole-genome alignment across 40 taxa.") != "AI studies"
+    _assert_not_bucket("Multiple sequence alignment of the chloroplast genome",
+                       "We report a whole-genome alignment across 40 taxa.",
+                       "AI studies")
 
 
 def test_the_tool_used_in_a_study_is_not_animal_tool_use():
-    assert _bucket("A mass spectrometry workflow for soil samples",
-                   "We describe the tool used to quantify each fraction.") != "Animal behavior and cognition"
+    _assert_not_bucket("A mass spectrometry workflow for soil samples",
+                       "We describe the tool used to quantify each fraction.",
+                       "Animal behavior and cognition")

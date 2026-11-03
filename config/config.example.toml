@@ -215,7 +215,7 @@ gain_factor = 1.4
 [plex]
 base_url = "http://127.0.0.1:32400/"
 library_name = "The Random Rabbit Hole"
-target_folder = "D:/Videos/PlexLibrary/Podcasts/The Random Rabbit Hole"
+target_folder = "D:/Media/Podcasts/The Random Rabbit Hole"
 
 [apis]
 unpaywall_email = "you@example.com"

@@ -40,8 +40,8 @@ nlm doctor             # diagnoses install + auth + browser state
 nlm login              # browser Google auth (interactive, one-time)
 ```
 
-> Already installed on this machine (2026-05-27); `nlm` lives at
-> `C:\Users\hugod\.local\bin\nlm.exe`. Only `nlm login` remains.
+> The npm global install puts `nlm` at `%USERPROFILE%\.local\bin\nlm.exe` on
+> Windows. Once it is on PATH, only `nlm login` remains.
 
 - `nlm login` (auto mode) launches Chrome, you sign in to Google, and it caches
   the session under `~/.notebooklm-mcp-cli`.
@@ -162,7 +162,7 @@ Podcasts type — scanning `D:\Videos\PlexLibrary\Podcasts`, which already has a
 `The Random Rabbit Hole\` subfolder. Episodes file there and are tagged
 album="The Random Rabbit Hole" / artist="Hugo Déziel", so Plex groups them as
 that album. Config therefore uses `library_name = "Podcasts"` and
-`target_folder = "D:/Videos/PlexLibrary/Podcasts/The Random Rabbit Hole"`.
+`target_folder = "D:/Media/Podcasts/The Random Rabbit Hole"`.
 
 ### Track ordering and generation date
 

@@ -7,8 +7,7 @@ import httpx
 
 from rabbit_hole.config import Config, SourceConfig
 from rabbit_hole.state import State, hash_str
-
-USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
+from rabbit_hole.useragent import user_agent
 
 
 @dataclass
@@ -52,7 +51,7 @@ def poll_source(source: SourceConfig, state: State) -> Iterator[FeedItem]:
     if not source.enabled:
         return
     etag, last_modified = state.get_etag(source.name)
-    headers = {"User-Agent": USER_AGENT}
+    headers = {"User-Agent": user_agent()}
     if etag:
         headers["If-None-Match"] = etag
     if last_modified:

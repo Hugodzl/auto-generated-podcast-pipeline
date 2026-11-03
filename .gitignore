@@ -5,3 +5,7 @@ data/
 logs/
 config/config.toml
 .pytest_cache/
+
+# Claude Code session state and worktrees. Untracked but not ignored meant one
+# `git add -A` could have published it.
+.claude/

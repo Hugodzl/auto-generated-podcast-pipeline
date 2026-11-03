@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from rabbit_hole.useragent import set_contact
+
 
 class ScheduleConfig(BaseModel):
     cron: str
@@ -86,4 +88,8 @@ def load_config(path: Path) -> Config:
         raise FileNotFoundError(f"config not found: {path}")
     with path.open("rb") as f:
         data = tomllib.load(f)
-    return Config.model_validate(data)
+    cfg = Config.model_validate(data)
+    # The outbound User-Agent identifies the operator to Unpaywall/Crossref, and
+    # the operator is whoever's address is in this file -- see useragent.py.
+    set_contact(cfg.apis.unpaywall_email)
+    return cfg

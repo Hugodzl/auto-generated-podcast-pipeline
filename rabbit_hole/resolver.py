@@ -12,6 +12,7 @@ from langdetect import DetectorFactory, LangDetectException, detect
 from rabbit_hole.config import ApisConfig
 from rabbit_hole.sources import FeedItem
 from rabbit_hole.state import State, hash_str
+from rabbit_hole.useragent import user_agent
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 # Matches a modern arXiv ID (YYMM.NNNNN with optional vN suffix) in one of two
@@ -23,7 +24,6 @@ ARXIV_RE = re.compile(
     re.IGNORECASE,
 )
 _ILLEGAL_FS = re.compile(r'[<>:"/\\|?*]')
-USER_AGENT = "RandomRabbitHole/1.0 (mailto:you@example.com)"
 # langdetect's EM algorithm is randomized; seed it so the same title+summary
 # always yields the same language (it now drives NLM's --language choice).
 DetectorFactory.seed = 0
@@ -125,7 +125,7 @@ def _get_json(url: str, api: str, state: State, params: dict | None = None) -> d
         return cached
 
     api_key = _api_key(api)
-    headers = {"User-Agent": USER_AGENT}
+    headers = {"User-Agent": user_agent()}
     if api_key:
         headers["x-api-key"] = api_key
 
@@ -153,7 +153,7 @@ def download_pdf(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
-        with httpx.stream("GET", url, headers={"User-Agent": USER_AGENT},
+        with httpx.stream("GET", url, headers={"User-Agent": user_agent()},
                           timeout=30.0, follow_redirects=True) as resp:
             resp.raise_for_status()
             with tmp.open("wb") as f:

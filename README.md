@@ -16,7 +16,8 @@ Weekly pipeline: science RSS -> paper PDF -> NotebookLM audio -> Plex.
 5. `copy config\config.example.toml config\config.toml` then edit topics/sources.
 6. `uv run python -m rabbit_hole.setup` (enter Plex token + Discord webhook).
 7. In Plex: confirm a **Music** library named "The Random Rabbit Hole" points at
-   `D:\Videos\PlexLibrary\Podcasts\The Random Rabbit Hole`.
+   the same folder as `[plex] target_folder` in your config — e.g.
+   `D:\Media\Podcasts\The Random Rabbit Hole`.
 8. Dry run: `uv run python -m rabbit_hole.run` with `episodes_per_run = 1` in config.
 
 ## Running manually
