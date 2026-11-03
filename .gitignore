@@ -9,3 +9,7 @@ config/config.toml
 # Claude Code session state and worktrees. Untracked but not ignored meant one
 # `git add -A` could have published it.
 .claude/
+
+# Superpowers build plans and design specs: ~7.4k lines of working notes that
+# were never meant to ship. They stay on disk, they just aren't published.
+docs/superpowers/
