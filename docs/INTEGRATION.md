@@ -158,7 +158,7 @@ Prompts for, and stores under keyring service `rabbit_hole`:
 
 Confirmed 2026-05-27 via the Plex API: the target is the existing **"Podcasts"**
 library (key 4), Plex **type = Music** (`artist`) — despite the name, NOT the
-Podcasts type — scanning `D:\Videos\PlexLibrary\Podcasts`, which already has a
+Podcasts type — scanning `D:\Media\Podcasts`, which already has a
 `The Random Rabbit Hole\` subfolder. Episodes file there and are tagged
 album="The Random Rabbit Hole" / artist="Hugo Déziel", so Plex groups them as
 that album. Config therefore uses `library_name = "Podcasts"` and
