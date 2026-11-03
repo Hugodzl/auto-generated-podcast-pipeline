@@ -106,10 +106,11 @@ type = "rss"
 url = "https://feeds.arstechnica.com/arstechnica/science"
 weight = 0.8
 
-# arXiv AI dropped 0.7 -> 0.6: cs.AI/LG/CL are 6,137 of the 8,809 items this
-# pipeline has ever ingested (70%), and their abstracts hit 4-6 AI keywords each,
-# so they took 7 of the first 8 episodes. The real diversity fix is round-robin at
-# 3 episodes/run; this just stops them leading every cycle.
+# arXiv AI dropped 0.7 -> 0.6: cs.AI/LG/CL are 11,100 of the 18,616 items this
+# pipeline has ever ingested (60% as of 2026-11-03; it was 70% of 8,809 when the
+# weight was first lowered), and their abstracts hit 4-6 AI keywords each, so they
+# took the first 7 episodes outright. The real diversity fix is round-robin; this
+# just stops them leading every cycle.
 [[sources]]
 name = "arXiv cs.AI"
 type = "rss"
